@@ -3,12 +3,11 @@
 #============================================================================================================================#
 import numpy as np 
 
-import MLP
 import CAE
 
+import metrics
 import data
 import tools 
-import validation as val
 import setup as stp
 
     
@@ -18,24 +17,21 @@ import setup as stp
 if __name__ == '__main__':
 
     args = tools.arg_parse()
-    
+
     #---------------------------------------------
     if args.train is not None:
 
-        config = stp.get_config(config_path=args.train)
-
+        config  = stp.get_config(config_path=args.train)
+    
         stp.set_config(config_data=config)
-        stp.hyperparameters()
+        stp.configuration()
 
         #------------------------------
         if stp.DATASET == "UTAH":
-
-            stp.UTAH_FILES                          = stp.UTAH_paths(nb_sample=stp.UTAH_FILES_SAMPLE)
-            (X_train, X_test, scaler, labels_test)  = data.UTAH_data(stp.UTAH_FILES, path_index=3)
+            (X_train, X_test, scaler, labels_test)  = data.UTAH_load(nb_sample=5, path_index=3)
 
         elif stp.DATASET == "OGW":
-
-            (X_train, X_test, scaler, labels_test)  = data.OGW_load(stp.UTAH_FILES, path_index=3)
+            (X_train, X_test, scaler, labels_test)  = data.OGW_load(nb_cycles=5, path_index=3)
 
         else :
             raise ValueError(f"no dataset recognized : {stp.DATASET}")
@@ -45,10 +41,10 @@ if __name__ == '__main__':
             training_outputs = CAE.CAE_train(X_uncrack=X_train, X_crack=X_test)
 
         elif stp.MODEL == "MLP":
-            training_outputs = MLP.MLP_train(X_uncrack=X_train, X_crack=X_test)
+            raise NotImplementedError("MLP_train not implemented yet")
 
         else :
-            training_outputs = MLP.MLP_train(X_uncrack=X_train, X_crack=X_test)
+            training_outputs = CAE.CAE_train(X_uncrack=X_train, X_crack=X_test)
 
         #------------------------------
         (model, train_losses)    = training_outputs[0], training_outputs[3]
@@ -63,9 +59,7 @@ if __name__ == '__main__':
                             threshold    = threshold)
 
     #---------------------------------------------
-    elif args.test is not None:
-
-        stp.set_config(config_data=stp.get_config(config_path=args.test))
+    # elif args.test is not None:
 
         # model = tools.load_model(model_path   = "./models/CAE_UTAH_shm.pth",
         #                          model_type   = "PyTorch",
@@ -82,18 +76,28 @@ if __name__ == '__main__':
     #---------------------------------------------
     elif args.plot is not None:
 
-        metrics = np.load(args.plot)
-        val.validation_report(metrics["healthy_mse"], metrics["crack_mse"], float(metrics["threshold"]))
+        config  = stp.get_config(config_path=args.plot)
+            
+        stp.set_config(config_data=config)
+        stp.model()
+        stp.datas()
 
-        # metrics = np.load(args.plot)
+        #------------------------------
+        metrics_data = np.load(file=f"{stp.MODELS_DIR}{stp.MODEL_NAME}_metrics.npz")
+        
+        healthy_mse  = metrics_data["healthy_mse"]
+        crack_mse    = metrics_data["crack_mse"]
+        threshold    = float(metrics_data["threshold"])
+        train_losses = metrics_data["train_losses"]
 
-        # tools.model_perf(
-        #     train_losses = metrics["train_losses"],
-        #     healthy_mse  = metrics["healthy_mse"],
-        #     crack_mse    = metrics["crack_mse"],
-        #     threshold    = metrics["threshold"]
-        # )
+        model_metrics = metrics.Metrics.from_mse(healthy_mse  = healthy_mse, 
+                                                 crack_mse    = crack_mse, 
+                                                 name         = stp.MODEL_NAME)
+        
+        model_metrics.summary(thr=threshold, plot=True)
+
+        fig = metrics.model_report(model_metrics, threshold, show=True)
 
     #---------------------------------------------
-    # else :
-    #   print(f"No command found")
+    else :
+      raise ValueError(f"No command found : {args}")
