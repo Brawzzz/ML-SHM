@@ -4,8 +4,73 @@
 import os
 import json
 
+from dataclasses import dataclass, field
+
+import numpy as np
 import pandas as pd
 import pickle as pkl
+
+
+#============================================================================================================================#
+#---------------------------------------------------------- CLASS -----------------------------------------------------------#
+#============================================================================================================================#
+@dataclass
+class SHMDataset:
+
+    """
+    Raw (NOT normalized) SHM dataset, common to every loader.
+
+    Normalisation is deliberately NOT done here : the scaler must be fitted on the
+    training split only (see data/splits.py), otherwise validation/test leak into it.
+
+    Attributes
+    ----------
+    name   : dataset name (e.g. "UTAH")
+    X      : signals, shape (n_signals, signal_length), float32
+    y      : labels, shape (n_signals,), 0 = healthy, 1 = damaged
+    groups : acquisition block of each signal, shape (n_signals,), int.
+             Signals of the same block are strongly correlated (same file / consecutive
+             cycles) and are always kept in the same split. Block ids are ordered
+             chronologically (block 0 = oldest).
+    meta   : one row per signal with dataset-specific information (temperature, damage tag ...)
+    """
+
+    name   : str
+    X      : np.ndarray
+    y      : np.ndarray
+    groups : np.ndarray
+    meta   : pd.DataFrame = field(default_factory=pd.DataFrame)
+
+    #================================================================================#
+    def __post_init__(self):
+
+        self.X      = np.asarray(self.X, dtype=np.float32)
+        self.y      = np.asarray(self.y, dtype=np.int64)
+        self.groups = np.asarray(self.groups, dtype=np.int64)
+
+        if self.X.ndim != 2:
+            raise ValueError(f"X must be 2D (n_signals, signal_length), got shape {self.X.shape}")
+
+        if not (len(self.X) == len(self.y) == len(self.groups)):
+            raise ValueError(f"X, y and groups must have the same length : "
+                             f"{len(self.X)}, {len(self.y)}, {len(self.groups)}")
+
+        if len(self.meta) and len(self.meta) != len(self.X):
+            raise ValueError(f"meta must have one row per signal : {len(self.meta)} != {len(self.X)}")
+
+    #================================================================================#
+    @property
+    def signal_length(self) -> int:
+        return self.X.shape[1]
+
+    #================================================================================#
+    def describe(self) -> str:
+
+        n_h = int((self.y == 0).sum())
+        n_d = int((self.y == 1).sum())
+
+        return (f"[{self.name}] {len(self.X)} signals (healthy : {n_h} | damaged : {n_d}) | "
+                f"length : {self.signal_length} | blocks : {len(np.unique(self.groups))}")
 
 
 #============================================================================================================================#

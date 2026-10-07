@@ -1,0 +1,41 @@
+{
+    "description": "CAE on OGW (CFRP temperature), hyperparameters tuned on validation PR-AUC (semi-supervised selection)",
+
+    "seed": 0,
+    "output_dir": "./results",
+
+    "data": {
+        "dataset": "OGW",
+        "dir_path": "D:/STG3/datasets/",
+        "params": {"nb_cycles": null, "freq_khz": 100, "channel": 0, "block_size": 10}
+    },
+
+    "split": {
+        "strategy": "group",
+        "val_size": 0.15,
+        "test_size": 0.15,
+        "damaged_val_size": 0.3
+    },
+
+    "preprocessing": {"scaler": "minmax"},
+
+    "model": {
+        "type": "CAE",
+        "params": {},
+        "search_space": {}
+    },
+
+    "training": {"epochs": 100, "patience": 10, "num_workers": 0},
+
+    "tuning": {
+        "enabled": true,
+        "objective": "pr_auc",
+        "n_trials": 30,
+        "timeout": null,
+        "resume": false
+    },
+
+    "threshold": {"method": "mean_std", "value": 3.0},
+
+    "evaluation": {"n_seeds": 3}
+}

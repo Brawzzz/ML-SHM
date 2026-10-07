@@ -3,60 +3,74 @@
 #============================================================================================================================#
 import os
 import glob
-import keras
+import json
+import random
 import torch
 import pickle
 import h5py
 
-import argparse as ap
-import matplotlib.pyplot as plt
+import numpy as np
 
 from datetime import datetime
 from sklearn.base import TransformerMixin
-
-import setup as stp
 
 
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
-def arg_parse() -> ap.Namespace:
+def set_seed(seed: int) -> None:
 
     """
-    Get the arguments and paths from the command line.
+    Seed python, numpy and torch for reproducible runs.
 
-    Returns
+    Parameters
     ----------
-    args : Object containing all parsed arguments.
+    seed : random seed
     """
 
     #---------------------------------------------
-    parser = ap.ArgumentParser(description="SHM methods for damage detection and localization")
-    
-    parser.add_argument("-T", "--train", type=str, default=None, 
-                        help="Launch training phase with the given configuration file")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
-    parser.add_argument("-t", "--test", type=str, default=None, 
-                        help="Launch testing phase on the corresponding signal index")
-    
-    parser.add_argument("-p", "--plot", type=str, default=None, 
-                        help="Path to the JSON file containing training losses for plotting")
-    
-    args = parser.parse_args()
+#================================================================================#
+def get_device(name: str = "auto") -> torch.device:
 
-    #------------------------------
-    if args.train is not None:
-        print(f"\n#--------------- Training config file : {args.train} ---------------#\n")
+    """
+    Return the torch device : "auto" -> cuda if available else cpu
+    """
 
-    #------------------------------
-    if args.test is not None:
-        print(f"\n#--------------- Testing signal index : {args.test} ---------------#\n")
+    #---------------------------------------------
+    if name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    #------------------------------
-    if args.plot is not None:
-        print(f"\n#--------------- Plotting training curve : {args.plot} ---------------#\n")
+    return torch.device(name)
 
-    return args
+#================================================================================#
+def save_json(obj, path: str) -> None:
+
+    """
+    Save a dict as an indented JSON file (numpy types converted)
+    """
+
+    #---------------------------------------------
+    def convert(o):
+        if isinstance(o, np.generic):
+            return o.item()
+        if isinstance(o, np.ndarray):
+            return o.tolist()
+        return str(o)
+
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=4, default=convert)
+
+#================================================================================#
+def load_json(path: str) -> dict:
+
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 #================================================================================#
 def _parse_ts(path):
@@ -159,7 +173,7 @@ def safe_predict(model: torch.nn.Module,
     return torch.cat(outputs, dim=0)
 
 #================================================================================#
-def save_model(model, scaler: TransformerMixin, model_name: str = "") -> None:
+def save_model(model, scaler: TransformerMixin, model_name: str = "", models_dir: str = "./models/") -> None:
 
     """
     Save a model (.keras for Keras, .pth for PyTorch) along with its scaler.
@@ -169,10 +183,11 @@ def save_model(model, scaler: TransformerMixin, model_name: str = "") -> None:
     model           : the model to save (Keras or PyTorch)
     scaler          : model's scaler tool
     model_name      : name of the model 
+    models_dir      : output directory
     """
 
     #---------------------------------------------
-    os.makedirs(stp.MODELS_DIR, exist_ok=True)
+    os.makedirs(models_dir, exist_ok=True)
 
     if model_name == "":
 
@@ -185,14 +200,14 @@ def save_model(model, scaler: TransformerMixin, model_name: str = "") -> None:
     #------------------------------
     print(f" -> Saving model ...", end="", flush=True)
 
-    if(isinstance(model, keras.Model)):
+    if type(model).__module__.startswith("keras"):
         
-        model_path = os.path.join(stp.MODELS_DIR, f"{base_name}.keras")
+        model_path = os.path.join(models_dir, f"{base_name}.keras")
         model.save(model_path)
 
     elif isinstance(model, torch.nn.Module):
         
-        model_path = os.path.join(stp.MODELS_DIR, f"{base_name}.pth")
+        model_path = os.path.join(models_dir, f"{base_name}.pth")
         torch.save(model.state_dict(), model_path)
 
     else:
@@ -203,7 +218,7 @@ def save_model(model, scaler: TransformerMixin, model_name: str = "") -> None:
     #------------------------------
     print(f" -> Saving model's scaler ...", end="", flush=True)
     
-    scaler_path = os.path.join(stp.MODELS_DIR, f"{base_name}_scaler.pkl")
+    scaler_path = os.path.join(models_dir, f"{base_name}_scaler.pkl")
     
     with open(scaler_path, 'wb') as file:
         pickle.dump(scaler, file)

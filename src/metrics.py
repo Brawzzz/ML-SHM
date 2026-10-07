@@ -1,6 +1,8 @@
 #============================================================================================================================#
 #---------------------------------------------------------- IMPORT ----------------------------------------------------------#
 #============================================================================================================================#
+import os
+
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -280,7 +282,7 @@ class Metrics:
         ax.set_xlabel("MSE Error"); ax.set_ylabel("Number of signal"); ax.legend()
     
     #================================================================================#
-    def summary(self, thr: float = None, show : bool = False, save : bool = False) -> dict:
+    def summary(self, thr: float = None, show : bool = False, save : bool = False, save_dir : str = "./models") -> dict:
 
         """
         Summarize all the metrics of a model in a dictionary.
@@ -290,6 +292,7 @@ class Metrics:
         thr     : Optional threshold value for classification. If provided, additional metrics will be included.
         plot    : wether to show the plot -- defaults False
         save    : wether to save the plot -- defaults False
+        save_dir: directory of the saved csv -- defaults ./models
 
         Returns
         ----------
@@ -337,7 +340,8 @@ class Metrics:
         if save:
 
             tag       = f"_at_{thr:.5f}" if thr is not None else ""
-            save_path = f"./models/{self.name}_metrics{tag}.csv"
+            os.makedirs(save_dir, exist_ok=True)
+            save_path = os.path.join(save_dir, f"{self.name}_metrics{tag}.csv")
 
             df_metrics = pd.DataFrame(summary_dict, index=[0])
             df_metrics.to_csv(save_path, index=False)
@@ -349,8 +353,7 @@ class Metrics:
 #============================================================================================================================#
 #------------------------------------------------------ FUNCTIONS -----------------------------------------------------------#
 #============================================================================================================================#
-def _accuracy(TP : float, FP : float,
-              TN : float, FN : float) -> float:
+def _accuracy(TP : float, FP : float, TN : float, FN : float) -> float:
 
     accuracy = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) else 0.0
     return accuracy
@@ -383,7 +386,10 @@ def _fpr(FP : float, TN : float):
 def model_report(metrics : "Metrics", 
                  threshold : float, 
                  train_losses : list = None, 
-                 save : bool = False) -> None:
+                 save : bool = False,
+                 val_losses : list = None,
+                 save_dir : str = "./models",
+                 show : bool = True) -> None:
 
     """
     Performance report of a model
@@ -394,6 +400,9 @@ def model_report(metrics : "Metrics",
     threshold       : Threshold value for classification.
     train_losses    : Optional list of training losses for plotting the learning curve -- defaults None
     save            : Whether to save the plot -- defaults False
+    val_losses      : Optional list of validation losses (plotted with the training losses)
+    save_dir        : directory of the saved figure -- defaults ./models
+    show            : Whether to show the figure -- defaults True
 
     Returns
     ----------
@@ -415,7 +424,7 @@ def model_report(metrics : "Metrics",
     subplot_idx = 0
 
     if train_losses is not None:
-        learning_curve(axes[subplot_idx], train_losses)           
+        learning_curve(axes[subplot_idx], train_losses, val_losses)           
         subplot_idx += 1
 
     #--------------
@@ -424,15 +433,21 @@ def model_report(metrics : "Metrics",
     CM = metrics.confusion(threshold, plot=True, ax=axes[subplot_idx])
 
     plt.tight_layout()
-    plt.show()
 
     #--------------
     if save: 
-        save_path = f"./models/{metrics.name}_report.png"
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"{metrics.name}_report.png")
         fig.savefig(save_path, bbox_inches='tight')
+        print(f"Report saved at : {save_path}")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 #================================================================================#
-def learning_curve(ax : plt.Axes, train_losses: list) -> None:
+def learning_curve(ax : plt.Axes, train_losses: list, val_losses: list = None) -> None:
 
     """
     Plot the learning curve for the training losses.
@@ -441,10 +456,13 @@ def learning_curve(ax : plt.Axes, train_losses: list) -> None:
     ----------
     axes            : matplotlib axes object to plot on
     train_losses    : list of training losses for each epoch
+    val_losses      : optional list of validation losses for each epoch
     """
 
     #---------------------------------------------
     ax.plot(train_losses, label='Train Loss (MSE)', color='blue', linewidth=2)
+    if val_losses is not None:
+        ax.plot(val_losses, label='Validation Loss (MSE)', color='orange', linewidth=2)
     ax.set_title('Learning Curve', fontsize=14)
     ax.set_xlabel('Epochs')
     ax.set_ylabel('Reconstruction Error (MSE)')
