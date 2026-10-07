@@ -6,13 +6,10 @@ import tqdm
 import glob
 
 import pickle as pkl
-import numpy as np 
-import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 
-from sklearn.preprocessing import MinMaxScaler
-
-import tools
-import setup as stp
+from .base import SHMDataset
 
 
 #============================================================================================================================#
@@ -22,111 +19,86 @@ UTAH_FILES_PREFIX       = "measurements_"
 UTAH_FILES_EXTENSION    = ".pickle"
 
 #================================================================================#
-def _utah_dir() -> str:
-    return os.path.join(stp.DATAS_DIR, "UTAH")
+def _utah_dir(dir_path: str) -> str:
+    return os.path.join(dir_path, "UTAH")
 
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
-def UTAH_load(nb_sample : int, path_index : int = 3):
+def UTAH_load(dir_path: str, nb_sample: int = 20, path_index: int = 3, verbose: bool = True) -> SHMDataset:
 
     """
-    Extraction and prepration of the datas from UTHA database
-    
+    Extraction of the RAW datas from the UTAH database (no normalisation, no split).
+
+    Each file (one month of measurements) is one acquisition block : all its signals
+    share the same `groups` id, so a block is never shared between train / val / test.
+
     Parameters
     ----------
-    nb_sample   : number of sample to load
-    path_index  : index of sensor to analyse (exemple : 3 --> path 5-4)
+    dir_path    : root datasets directory (the files are read in <dir_path>/UTAH)
+    nb_sample   : number of files to load, regularly spaced in time (<= 0 -> all)
+    path_index  : index of sensor path to analyse (exemple : 3 --> path 5-4)
+    verbose     : print loading information
 
     Returns
     ----------
-    X_train     : healthy dataset 
-    X_test      : cracks dataset, 
-    scaler      : scaler tools used for training phase  
-    cracks_info : damage caracteristics
+    SHMDataset : X (all signals), y (0 healthy / 1 damaged), groups (file index), meta
     """
 
     #------------------------------
-    files       = UTAH_files(nb_sample=nb_sample, data_dir=_utah_dir())
+    files       = UTAH_files(nb_sample=nb_sample, data_dir=_utah_dir(dir_path))
     valid_files = [file for file in files if os.path.exists(file)]
 
     if not valid_files:
-        print("None valid files")
-        return(None, None, None, None)
+        raise FileNotFoundError(f"[UTAH] no valid file found in : {_utah_dir(dir_path)}")
 
-    print("\n#----------------- UTAH FILES -----------------#\n")
-    for file in valid_files : 
-        print(f"file : {file}")
-    print("")
-    
+    if verbose:
+        print("\n#----------------- UTAH FILES -----------------#\n")
+        for file in valid_files:
+            print(f"file : {file}")
+        print("")
+
     #------------------------------
-    healthy_signals   = []
-    cracks_signals    = []
-    cracks_info       = []
+    (signals_list, labels, groups, meta_rows) = ([], [], [], [])
 
-    pbar = tqdm.tqdm(range(len(valid_files)), desc="Loading UTAH datas", unit="files")
+    for block, file in enumerate(tqdm.tqdm(valid_files, desc="Loading UTAH datas", unit="files", disable=not verbose)):
 
-    for file in valid_files:
-
-        if not os.path.exists(file):
-            print(f"No such file or directory : {file}")
-            continue
-            
         with open(file, 'rb') as f:
             dataset = pkl.load(f)
 
         #---------------
-        signals = dataset['guided wave']
-        damages = dataset['damage tag']
-        weather = dataset['weather tag']
-        temps   = dataset['temperature']
+        signals = np.asarray(dataset['guided wave'])
+        damages = np.asarray(dataset['damage tag'])
+        weather = np.asarray(dataset['weather tag'])
+        temps   = np.asarray(dataset['temperature'])
 
         #---------------
-        idx_healty = np.where(damages == 0)[0]
+        signals_list.append(signals[:, path_index, :])
+        labels.append((damages > 0).astype(int))
+        groups.append(np.full(len(damages), block))
 
-        for i in idx_healty:
-            healthy_signals.append(signals[i, path_index, :])
-
-        #---------------
-        idx_fissures = np.where(damages > 0)[0]
-
-        for i in idx_fissures:
-
-            cracks_signals.append(signals[i, path_index, :])
-
-            context = f"Damge D{damages[i]} | Weather : {weather[i]} | Temp: {temps[i]:.1f}°C"
-            cracks_info.append(context)
-
-        #---------------
-        pbar.update(1)
-
-    pbar.close()
+        for i in range(len(damages)):
+            meta_rows.append({
+                "file"        : os.path.basename(file),
+                "damage_tag"  : int(damages[i]),
+                "weather"     : weather[i],
+                "temperature" : float(temps[i]),
+            })
 
     #---------------------------------------------
-    print(f"\nhealthy / cracks signals segmentation ...", end="", flush=True)
+    ds = SHMDataset(name   = "UTAH",
+                    X      = np.concatenate(signals_list, axis=0),
+                    y      = np.concatenate(labels),
+                    groups = np.concatenate(groups),
+                    meta   = pd.DataFrame(meta_rows))
 
-    X_train_raw = np.array(healthy_signals)
-    X_test_raw  = np.array(cracks_signals)
+    if verbose:
+        print(f"\n{ds.describe()}\n")
 
-    print(f"Done\n")
-
-    print(f" -> healthy signals extracted \t: {len(X_train_raw)}")
-    print(f" -> crack signals extracted \t: {len(X_test_raw)}\n")
-
-    #---------------
-    scaler = MinMaxScaler()
-
-    X_train = scaler.fit_transform(X_train_raw)
-
-    if len(X_test_raw) > 0:
-        X_test = scaler.transform(X_test_raw)
-    else:
-        X_test = np.empty((0, X_train_raw.shape[1]))
-        
-    return(X_train, X_test, scaler, cracks_info)
+    return ds
 
 #================================================================================#
-def UTAH_files(nb_sample: int = 5, data_dir : str = None) -> list:
+def UTAH_files(nb_sample: int = 5, data_dir : str = "./datasets/UTAH") -> list:
 
     """
     Return nb_sample paths within data_dir directory.
@@ -134,8 +106,8 @@ def UTAH_files(nb_sample: int = 5, data_dir : str = None) -> list:
 
     Parameters
     ----------
-    nb_sample : number of files to extract from data_dir (default : 5)
-    data_dir  : directory where the UTAH data files are stored (default : UTAH_DIR = "./datasets/UTAH/")
+    nb_sample : number of files to extract from data_dir (default : 5, <= 0 -> all)
+    data_dir  : directory where the UTAH data files are stored
 
     Returns
     ----------
@@ -143,9 +115,6 @@ def UTAH_files(nb_sample: int = 5, data_dir : str = None) -> list:
     """
 
     #---------------------------------------------
-    if data_dir is None:
-        data_dir = _utah_dir()
-
     all_files = sorted(glob.glob(os.path.join(data_dir, f"{UTAH_FILES_PREFIX}*{UTAH_FILES_EXTENSION}")))
 
     if not all_files:
@@ -162,27 +131,24 @@ def UTAH_files(nb_sample: int = 5, data_dir : str = None) -> list:
     return [all_files[i] for i in idx]
 
 #================================================================================#
-def UTAH_rename_files(data_dir : str = None) -> None:
-    
+def UTAH_rename_files(data_dir : str = "./datasets/UTAH") -> None:
+
     """
     rename the UTAH files in the data_dir directory to ensure a consistent naming convention.
 
     Parameters
     ----------
-    data_dir : directory where the UTAH data files are stored (default : UTAH_DIR = "<DATAS_DIR>/UTAH")
+    data_dir : directory where the UTAH data files are stored
     """
 
     #---------------------------------------------
-    if data_dir is None:
-        data_dir = _utah_dir()
-
     all_files = sorted(glob.glob(os.path.join(data_dir, f"measurements *{UTAH_FILES_EXTENSION}")))
 
     if not all_files:
         print(f"[UTAH] no file found in : {data_dir}")
-    
+
     for file in all_files:
 
         print(f"file            : {file}")
-        os.rename(file, file.replace("measurements ", "measurements_")) 
+        os.rename(file, file.replace("measurements ", "measurements_"))
         print(f"renamed file    : {file}")

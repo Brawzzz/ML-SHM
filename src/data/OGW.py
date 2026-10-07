@@ -7,104 +7,115 @@ import h5py
 import glob
 import tqdm
 
-import numpy as np 
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-from sklearn.preprocessing import MinMaxScaler
 
 import tools
-import setup as stp
+from .base import SHMDataset
 
 
 #============================================================================================================================#
 #--------------------------------------------------------- CONSTANT ---------------------------------------------------------#
 #============================================================================================================================#
-OGW_FILES              = []
-OGW_DIR                = stp.DATAS_DIR + "OGW/OGW_CFRP_Temperature/" 
 OGW_FILES_PREFIX       = "pc_f"
 OGW_FILES_SUFIX        = "kHz"
 OGW_FILES_EXTENSION    = ".h5"
 
+#================================================================================#
+def _ogw_prefix(dir_path: str) -> str:
+    """Default state-directory prefix : <dir_path>/OGW/OGW_CFRP_Temperature (+ '_udam', '_dam_D04' ...)"""
+    return os.path.join(dir_path, "OGW", "OGW_CFRP_Temperature")
+
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
-def OGW_load(nb_cycles: int = None,
+def OGW_load(dir_path: str,
+             nb_cycles: int = None,
              freq_khz: int = 100,
              channel: int = 0,
              base_dir: str = None,
              damage_states: list = None,
-             verbose: bool = False):
+             block_size: int = 10,
+             verbose: bool = True) -> SHMDataset:
 
     """
-    Load the OGW dataset to return : (X_train, X_test, scaler, labels_test)
+    Load the RAW OGW dataset (no normalisation, no split).
 
-    File format : healthy = '<base>_udam'  |  damaged = '<base>_dam_D04' ... '_dam_D24'
+    File format : healthy = '<base_dir>_udam'  |  damaged = '<base_dir>_dam_D04' ... '_dam_D24'
+
+    Consecutive cycles of one damage state are acquired at neighbouring temperatures,
+    so they are grouped by blocks of `block_size` cycles : a block is never shared
+    between train / val / test (otherwise neighbouring, almost identical
+    measurements end up on both sides of the split).
 
     Parameters
     ----------
+    dir_path      : root datasets directory
     nb_cycles     : timestamped folders per state (None -> all)
     freq_khz      : excitation frequency to keep
     channel       : actuator-receiver path index (0..65)
-    base_dir      : '<...>/OGW_CFRP_Temperature' prefix (default : OGW_DIR)
+    base_dir      : state-directory prefix (default : <dir_path>/OGW/OGW_CFRP_Temperature)
     damage_states : damage positions (default : D04, D12, D16, D24)
+    block_size    : number of consecutive cycles per acquisition block
+    verbose       : print loading information
 
     Returns
     ----------
-    (X_train, X_test, scaler, labels_test)
-
-    X_train     :
-    X_test      : 
-    scaler      : 
-    labels_test : 
+    SHMDataset : X (all signals), y (0 healthy / 1 damaged), groups (blocks of cycles), meta
     """
-    
-    #---------------------------------------------
-    if base_dir is None:      
-        base_dir = OGW_DIR
 
-    if damage_states is None: 
+    #---------------------------------------------
+    if base_dir is None:
+        base_dir = _ogw_prefix(dir_path)
+
+    if damage_states is None:
         damage_states = ["D04", "D12", "D16", "D24"]
 
-    #---------------------------------------------
-    X_healthy, df_h = _load_state(base_dir + "_udam", nb_cycles, freq_khz, channel)
-    if df_h is None or df_h.empty:
-        raise RuntimeError("no healthy (udam) OGW data found")
-    
-    X_healthy = _extract_matrix(df_h, channel, "catch")
+    states = [("udam", 0)] + [(f"dam_{d}", 1) for d in damage_states]
 
     #---------------------------------------------
-    (crack_list, labels) = [], []
+    (X_list, y_list, g_list, meta_list) = ([], [], [], [])
+    next_block = 0
 
-    for d in damage_states:
-        
-        (X_c, df_c) = _load_state(base_dir + "_dam_" + d, nb_cycles, freq_khz, channel)
+    for (state, label) in states:
 
-        if df_c is None or df_c.empty:
+        state_dir = f"{base_dir}_{state}"
+        (X_s, df_s) = _load_state(state_dir, nb_cycles, freq_khz, channel)
+
+        if df_s is None or df_s.empty:
+            if label == 0:
+                raise RuntimeError(f"[OGW] no healthy data found in : {state_dir} "
+                                   f"(set data.params.base_dir in the experiment config if your layout differs)")
             continue
 
-        crack_list.append(X_c)
-        labels += [f"Damage {d} | Temp: {t:.1f}C" for t in df_c["temperature"].values]
+        #---------------
+        df_s   = df_s.sort_values("timestamp").reset_index(drop=True)
+        X_s    = _extract_matrix(df_s, channel, "catch")
+        blocks = np.arange(len(df_s)) // max(1, block_size)
 
-    #--------------------
-    if crack_list:
-        X_crack = np.vstack(crack_list)
-    else:
-        X_crack = np.empty((0, X_healthy.shape[1]))
+        X_list.append(X_s)
+        y_list.append(np.full(len(df_s), label))
+        g_list.append(blocks + next_block)
+        meta_list.append(df_s[["damage_state", "timestamp", "temperature"]])
+
+        next_block += int(blocks.max()) + 1
 
     #---------------------------------------------
-    scaler  = MinMaxScaler()
-    X_train = scaler.fit_transform(X_healthy)
-    X_test  = scaler.transform(X_crack) if len(X_crack) else np.empty((0, X_healthy.shape[1]))
+    ds = SHMDataset(name   = "OGW",
+                    X      = np.vstack(X_list),
+                    y      = np.concatenate(y_list),
+                    groups = np.concatenate(g_list),
+                    meta   = pd.concat(meta_list, ignore_index=True))
 
-    #--------------------
     if verbose:
-        print(f" -> OGW healthy : {len(X_train)} | damaged : {len(X_test)}")
-        
-    return(X_train, X_test, scaler, labels)
+        print(f"\n{ds.describe()}\n")
+
+    return ds
 
 #================================================================================#
 def OGW_cycles(state_dir: str,
