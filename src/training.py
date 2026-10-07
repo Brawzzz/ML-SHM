@@ -36,12 +36,18 @@ def make_loader(X: np.ndarray, y: np.ndarray, batch_size: int, shuffle: bool,
     """
 
     #---------------------------------------------
-    dataset   = TensorDataset(torch.as_tensor(X, dtype=torch.float32).unsqueeze(1),
-                              torch.as_tensor(y, dtype=torch.long))
+    X_tensor = torch.as_tensor(X, dtype=torch.float32).unsqueeze(1)
+    y_tensor = torch.as_tensor(y, dtype=torch.long)
+
+    dataset   = TensorDataset(X_tensor, y_tensor)
     generator = torch.Generator().manual_seed(seed) if seed is not None else None
 
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers,
-                      generator=generator, pin_memory=torch.cuda.is_available())
+    return DataLoader(dataset, 
+                      batch_size=batch_size, 
+                      shuffle=shuffle, 
+                      num_workers=num_workers,
+                      generator=generator, 
+                      pin_memory=torch.cuda.is_available())
 
 #================================================================================#
 def fit(model: BaseDetector,
@@ -108,7 +114,7 @@ def fit(model: BaseDetector,
 
     for epoch in pbar:
 
-        #------------------------------ train
+        #------------------------- TRAIN -------------------------#
         model.train()
         train_loss = 0.0
 
@@ -125,7 +131,7 @@ def fit(model: BaseDetector,
 
         train_loss /= len(train_loader.dataset)
 
-        #------------------------------ validation
+        #------------------------- VALIDATION ---------------------#
         val_loss = evaluate_loss(model, val_loader, device)
 
         history["train_loss"].append(train_loss)

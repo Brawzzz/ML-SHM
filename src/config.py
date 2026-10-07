@@ -9,6 +9,7 @@ import json
 #============================================================================================================================#
 #--------------------------------------------------------- CONSTANT ---------------------------------------------------------#
 #============================================================================================================================#
+
 """
 An experiment config describes WHAT is run (model, dataset, split, budget), not the
 model's hyperparameters : those belong to the model (DEFAULTS / SEARCH_SPACE in its
@@ -19,6 +20,7 @@ model.search_space : overrides of the model SEARCH_SPACE for this experiment (op
 """
 
 DEFAULT_EXPERIMENT = {
+
     "name"          : None,                 # default : <model>_<dataset>_<objective>
     "seed"          : 0,
     "output_dir"    : "./results",
@@ -108,7 +110,9 @@ def load_experiment(config_path: str) -> dict:
 #================================================================================#
 def _merge(default: dict, user: dict, path: str) -> dict:
 
-    """Recursive merge, unknown keys raise an error (typo protection)"""
+    """
+    Recursive merge, unknown keys raise an error (typo protection)
+    """
 
     #---------------------------------------------
     out = copy.deepcopy(default)
