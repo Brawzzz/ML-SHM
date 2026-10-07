@@ -25,12 +25,12 @@
         "search_space": {}
     },
 
-    "training": {"epochs": 100, "patience": 10, "num_workers": 0},
+    "training": {"epochs": 20, "patience": 10, "num_workers": 0},
 
     "tuning": {
         "enabled": true,
         "objective": "pr_auc",
-        "n_trials": 30,
+        "n_trials": 3,
         "timeout": null,
         "resume": false
     },
