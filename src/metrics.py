@@ -2,6 +2,7 @@
 #---------------------------------------------------------- IMPORT ----------------------------------------------------------#
 #============================================================================================================================#
 import numpy as np
+import pandas as pd
 import seaborn as sns
 import sklearn.metrics as skm
 import matplotlib.pyplot as plt
@@ -43,9 +44,9 @@ class Metrics:
         y_score = np.concatenate([healthy_mse, crack_mse])
 
         return cls(y_true, y_score, name=name)
-    
+
     #================================================================================#
-    def pr_auc(self) -> float:   
+    def PR_auc(self) -> float:   
 
         """
         Compute the Area Under the Curve (AUC) for the Precision-Recall (PR) curve.
@@ -58,7 +59,7 @@ class Metrics:
         return skm.average_precision_score(self.y_true, self.y_score)
 
     #================================================================================#
-    def roc_auc(self) -> float:  
+    def ROC_auc(self) -> float:  
 
         """
         Compute the Area Under the Curve (AUC) for the Receiver Operating Characteristic (ROC) curve.
@@ -72,41 +73,7 @@ class Metrics:
         return skm.roc_auc_score(self.y_true, self.y_score)
 
     #================================================================================#
-    def at_threshold(self, thr : float) -> dict:
-
-        """
-        
-        Parameters
-        ----------
-        thr : Threshold value for classification.
-        
-        Returns
-        ----------
-        dict : Dictionary containing : 
-                - precision
-                - recall
-                - f1-score
-                - false positive rate (f_pr)
-        """
-
-        #---------------------------------------------
-        CM = self.confusion(threshold=thr, plot=False)
-
-        TP = CM[1, 1]
-        FP = CM[0, 1]
-        FN = CM[1, 0]
-        TN = CM[0, 0]
-
-        precision = TP / (TP + FP) if (TP + FP) else 0.0
-        recall    = TP / (TP + FN) if (TP + FN) else 0.0
-
-        f_pr      = FP / (FP + TN) if (FP + TN) else 0.0
-        f1        = 2 * (precision * recall) / (precision + recall) if (precision + recall) else 0.0
-        
-        return {"precision": precision, "recall": recall, "f1": f1, "f_pr": f_pr}
-
-    #================================================================================#
-    def pr_curve(self, ax=None, show: bool = True) -> float:
+    def PR_curve(self, ax=None, show: bool = True) -> float:
 
         """
         plot PR - Precision-Recall curve and return AUC score
@@ -122,7 +89,7 @@ class Metrics:
         """
 
         #---------------------------------------------
-        pr_auc                 = self.pr_auc()
+        pr_auc                 = self.PR_auc()
         (precision, recall, _) = skm.precision_recall_curve(self.y_true, self.y_score)
 
         #-------------------------
@@ -154,7 +121,7 @@ class Metrics:
         return pr_auc
 
     #================================================================================#
-    def roc_curve(self, ax=None, show: bool = True) -> float:
+    def ROC_curve(self, ax=None, show: bool = True) -> float:
 
         """
         plot ROC curve and return AUC score
@@ -170,7 +137,7 @@ class Metrics:
         """
 
         #---------------------------------------------
-        roc_auc         = self.roc_auc()
+        roc_auc         = self.ROC_auc()
         (f_pr, t_pr, _) = skm.roc_curve(self.y_true, self.y_score)
 
         #-------------------------
@@ -199,6 +166,53 @@ class Metrics:
 
         return roc_auc
 
+    #================================================================================#
+    def at_threshold(self, thr : float) -> dict:
+
+        """
+        Compute different metrics for a model at a specific threshold
+
+        Parameters
+        ----------
+        thr : Threshold value for classification.
+        
+        Returns
+        ----------
+        dict : Dictionary containing : 
+                - precision
+                - recall
+                - f1-score
+                - false positive rate (f_pr)
+        """
+
+        #---------------------------------------------
+        CM = self.confusion(threshold=thr, plot=False)
+
+        TP = CM[1, 1]
+        FP = CM[0, 1]
+        FN = CM[1, 0]
+        TN = CM[0, 0]
+
+        accuracy  = _accuracy(TP, FP, TN, FN)
+        precision = _precision(TP, FP)
+        recall    = _recall(TP, FN)
+        f_pr      = _fpr(FP, TN)
+        f1        = _Fscore(precision, recall)
+
+        metrics = {
+            "accuracy": accuracy,
+            "precision": precision, 
+            "recall": recall, 
+            "f1": f1, 
+            "f_pr": f_pr,
+            "TP" : TP, 
+            "FP" : FP,
+            "FN" : FN,
+            "TN" : TN
+            }
+        
+        return metrics
+    
     #================================================================================#
     def confusion(self, threshold : float, plot : bool = False, ax=None) -> np.ndarray:
 
@@ -258,22 +272,24 @@ class Metrics:
         healthy = self.y_score[self.y_true == 0]
         damaged = self.y_score[self.y_true == 1]
  
-        sns.histplot(healthy, bins=50, color="green", alpha=0.6, label="Healthy (Validation)", ax=ax, stat="count")
-        sns.histplot(damaged, bins=50, color="red",   alpha=0.6, label="Damaged (Test)",      ax=ax, stat="count")
+        sns.histplot(healthy, bins=50, color="green", alpha=0.6, label="Healthy", ax=ax, stat="density")
+        sns.histplot(damaged, bins=50, color="red",   alpha=0.5, label="Damaged", ax=ax, stat="density")
 
         ax.axvline(threshold, color="black", linestyle="dashed", linewidth=2, label="Warning threshold")
         ax.set_title("Reconstruction error separation", fontsize=14)
         ax.set_xlabel("MSE Error"); ax.set_ylabel("Number of signal"); ax.legend()
     
     #================================================================================#
-    def summary(self, thr: float = None, plot : bool = False) -> dict:
+    def summary(self, thr: float = None, show : bool = False, save : bool = False) -> dict:
 
         """
         Summarize all the metrics of a model in a dictionary.
 
         Parameters
         ----------
-        thr : Optional threshold value for classification. If provided, additional metrics will be included.
+        thr     : Optional threshold value for classification. If provided, additional metrics will be included.
+        plot    : wether to show the plot -- defaults False
+        save    : wether to save the plot -- defaults False
 
         Returns
         ----------
@@ -287,14 +303,26 @@ class Metrics:
         """
 
         #---------------------------------------------
-        summary_dict = {"PR-AUC": self.pr_auc(), "ROC-AUC": self.roc_auc()}
+        summary_dict = {"PR-AUC": self.PR_auc(), "ROC-AUC": self.ROC_auc()}
 
         if thr is not None:
+
             pt = self.at_threshold(thr)
-            summary_dict.update({"precision": pt["precision"], "recall": pt["recall"], "f1": pt["f1"], "f_pr": pt["f_pr"]})
+
+            summary_dict.update({
+                "accuracy": pt["accuracy"],
+                "precision": pt["precision"], 
+                "recall": pt["recall"], 
+                "f1": pt["f1"], 
+                "f_pr": pt["f_pr"],
+                "TP" : pt["TP"], 
+                "FP" : pt["FP"],
+                "FN" : pt["FN"],
+                "TN" : pt["TN"]
+                })
 
         #-------------------------
-        if plot:
+        if show:
             print(f"\n#--------- Metrics : {self.name or 'model'} ---------#")
 
             for k, v in summary_dict.items():
@@ -305,12 +333,57 @@ class Metrics:
                 
             print("#------------------------------------------#\n")
 
+        #-------------------------
+        if save:
+
+            tag       = f"_at_{thr:.5f}" if thr is not None else ""
+            save_path = f"./models/{self.name}_metrics{tag}.csv"
+
+            df_metrics = pd.DataFrame(summary_dict, index=[0])
+            df_metrics.to_csv(save_path, index=False)
+
+            print(f"Metrics saved at : {save_path}")
+
         return summary_dict
 
 #============================================================================================================================#
-#------------------------------------------------------ FUNCTION ------------------------------------------------------------#
+#------------------------------------------------------ FUNCTIONS -----------------------------------------------------------#
 #============================================================================================================================#
-def model_report(metrics: "Metrics", threshold: float, train_losses: list = None, show: bool = True):
+def _accuracy(TP : float, FP : float,
+              TN : float, FN : float) -> float:
+
+    accuracy = (TP + TN) / (TP + TN + FP + FN) if (TP + TN + FP + FN) else 0.0
+    return accuracy
+
+#================================================================================#
+def _precision(TP : float, FP : float) -> float :
+
+    precision = TP / (TP + FP) if (TP + FP) else 0.0
+    return precision
+
+#================================================================================#
+def _recall(TP : float, FN : float) -> float :
+
+    recall = TP / (TP + FN) if (TP + FN) else 0.0
+    return recall
+
+#================================================================================#
+def _Fscore(precision : float, recall : float) -> float :
+
+    f_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) else 0.0
+    return f_score
+
+#================================================================================#
+def _fpr(FP : float, TN : float):
+
+    fpr = FP / (FP + TN) if (FP + TN) else 0.0
+    return fpr
+
+#================================================================================#
+def model_report(metrics : "Metrics", 
+                 threshold : float, 
+                 train_losses : list = None, 
+                 save : bool = False) -> None:
 
     """
     Performance report of a model
@@ -320,11 +393,11 @@ def model_report(metrics: "Metrics", threshold: float, train_losses: list = None
     metrics         : Metrics object containing the model's performance metrics.
     threshold       : Threshold value for classification.
     train_losses    : Optional list of training losses for plotting the learning curve -- defaults None
-    show            : Whether to display the plot -- defaults True
+    save            : Whether to save the plot -- defaults False
 
     Returns
     ----------
-    fig : matplotlib figure object containing the report plots.
+    None
     """
 
     #---------------------------------------------
@@ -348,15 +421,15 @@ def model_report(metrics: "Metrics", threshold: float, train_losses: list = None
     #--------------
     metrics.distribution_error(threshold, ax=axes[subplot_idx])
     subplot_idx += 1
-    metrics.confusion(threshold, plot=True, ax=axes[subplot_idx])
+    CM = metrics.confusion(threshold, plot=True, ax=axes[subplot_idx])
 
     plt.tight_layout()
+    plt.show()
 
     #--------------
-    if show: 
-        plt.show()
-
-    return fig
+    if save: 
+        save_path = f"./models/{metrics.name}_report.png"
+        fig.savefig(save_path, bbox_inches='tight')
 
 #================================================================================#
 def learning_curve(ax : plt.Axes, train_losses: list) -> None:

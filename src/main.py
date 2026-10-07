@@ -28,7 +28,7 @@ if __name__ == '__main__':
 
         #------------------------------
         if stp.DATASET == "UTAH":
-            (X_train, X_test, scaler, labels_test)  = data.UTAH_load(nb_sample=5, path_index=3)
+            (X_train, X_test, scaler, labels_test)  = data.UTAH_load(nb_sample=20, path_index=3)
 
         elif stp.DATASET == "OGW":
             (X_train, X_test, scaler, labels_test)  = data.OGW_load(nb_cycles=5, path_index=3)
@@ -52,14 +52,22 @@ if __name__ == '__main__':
         (healthy_mse, crack_mse) = training_outputs[4], training_outputs[5]
 
         tools.save_model(model, scaler, model_name=stp.MODEL_NAME)
+
+        print(f" -> Saving model's metrics ... ", end="", flush=True)
         np.savez_compressed(f"./models/{stp.MODEL_NAME}_metrics.npz",
                             train_losses = train_losses,
                             healthy_mse  = healthy_mse,
                             crack_mse    = crack_mse,
                             threshold    = threshold)
+        print(f"Done\n")
 
     #---------------------------------------------
-    # elif args.test is not None:
+    elif args.test is not None:
+
+        config  = stp.get_config(config_path=args.test)
+                    
+        stp.set_config(config_data=config)
+        stp.configuration()
 
         # model = tools.load_model(model_path   = "./models/CAE_UTAH_shm.pth",
         #                          model_type   = "PyTorch",
@@ -94,9 +102,9 @@ if __name__ == '__main__':
                                                  crack_mse    = crack_mse, 
                                                  name         = stp.MODEL_NAME)
         
-        model_metrics.summary(thr=threshold, plot=True)
+        model_metrics.summary(thr=threshold, show=True, save=True)
 
-        fig = metrics.model_report(model_metrics, threshold, show=True)
+        metrics.model_report(model_metrics, threshold, save=True)
 
     #---------------------------------------------
     else :
