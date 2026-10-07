@@ -18,7 +18,7 @@ in its own module.
 
 #---------------------------------------------
 from .base import explore_file, display_data
-from .UTAH import UTAH_load
+from .UTAH import UTAH_load, UTAH_files, UTAH_rename_files
 from .OGW  import OGW_load, OGW_concat, OGW_plot
 
 #---------------------------------------------
@@ -26,6 +26,8 @@ __all__ = [
     "explore_file",
     "display_data",
     "UTAH_load",
+    "UTAH_files",
+    "UTAH_rename_files",
     "OGW_load",
     "OGW_concat",
     "OGW_plot",
