@@ -5,14 +5,13 @@ import os
 import tqdm
 import glob
 
-import pickle as pkl
 import numpy as np 
-import matplotlib.pyplot as plt
+import pandas as pd
+import pickle as pkl
 
-from sklearn.preprocessing import MinMaxScaler
-
-import tools
 import setup as stp
+
+from .GWDataset import GWDataset
 
 
 #============================================================================================================================#
@@ -28,102 +27,97 @@ def _utah_dir() -> str:
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
-def UTAH_load(nb_sample : int, path_index : int = 3):
+def UTAH_load(nb_sample  : int = 5,
+              path_index : int = 3,
+              dir_path   : str = None,
+              block_size : int = None) -> GWDataset:
 
     """
-    Extraction and prepration of the datas from UTHA database
-    
-    Parameters
-    ----------
-    nb_sample   : number of sample to load
-    path_index  : index of sensor to analyse (exemple : 3 --> path 5-4)
+    Load the UTAH - SHM dataset as a raw GWDataset.
 
-    Returns
+    Each selected file is read, and the signals of ONE actuator-receiver path are kept. 
+    Signals are returned unscaled : normalization must be fitted only on the train set, after the split.
+
+    Each file (measurements_20xx_xx.pickle) is one month of acquisitions
+
+    Parameters:
     ----------
-    X_train     : healthy dataset 
-    X_test      : cracks dataset, 
-    scaler      : scaler tools used for training phase  
-    cracks_info : damage caracteristics
+    nb_sample   : (int) number of files in which the data are extracted -- defaults : nb_sample = 5
+    path_index  : (int) index of the analyse path (a pair of sensor) -- defaults : path_index = 3
+    dir_path    : (str) path to the data directory -- defaults : dir_path = None
+    block_size  : (int) number of consecutive measurements per group  -- defaults : block_size = None
+                        if block_size = None -> one group per file (= 1 month)
+
+    Return:
+    ----------
+    raw_dataset : GWDataset oject containing 
+
+        X      : signals of the selected path -- shape (n_signals, signal_length)
+        y      : signal's labels
+                    - 0 = healthy (damage tag == 0)
+                    - 1 = damaged (damage tag > 0)
+
+        groups : acquisition block of each signal, chronological ids (0 = oldest)
+                 ids restart at 0 in each file, then are shifted to be unique across files
+
+        meta   : signal's metadata, one row per signal -- columns : file, damage, weather, temperature
+
+    Notes
+    ----------
+    splits() needs at least 2 groups per class (healthy / damaged).
+    If damaged signals appear in only a few files, set block_size to get more groups.
+
     """
 
+    #---------------------------------------------
+    path    = dir_path if os.path.exists(dir_path) else _utah_dir()
+    files   = UTAH_files(nb_sample=nb_sample, data_dir=path)
+
+    if not files:
+        raise FileNotFoundError(f"no UTAH file found in : {path}")
+
     #------------------------------
-    files       = UTAH_files(nb_sample=nb_sample, data_dir=_utah_dir())
-    valid_files = [file for file in files if os.path.exists(file)]
+    next_group_id         = 0
+    (X, y, groups, metas) = ([], [], [], [])
 
-    if not valid_files:
-        print("None valid files")
-        return(None, None, None, None)
+    for file in tqdm.tqdm(files, desc="Loading UTAH dataset", unit="file"):
 
-    print("\n#----------------- UTAH FILES -----------------#\n")
-    for file in valid_files : 
-        print(f"file : {file}")
-    print("")
-    
-    #------------------------------
-    healthy_signals   = []
-    cracks_signals    = []
-    cracks_info       = []
-
-    pbar = tqdm.tqdm(range(len(valid_files)), desc="Loading UTAH datas", unit="files")
-
-    for file in valid_files:
-
-        if not os.path.exists(file):
-            print(f"No such file or directory : {file}")
-            continue
-            
+        #---------------
         with open(file, 'rb') as f:
             dataset = pkl.load(f)
 
-        #---------------
-        signals = dataset['guided wave']
-        damages = dataset['damage tag']
-        weather = dataset['weather tag']
-        temps   = dataset['temperature']
+        signals         = dataset['guided wave']
+        damages         = np.asarray(dataset['damage tag'])
+        nb_measurements = len(damages)
 
         #---------------
-        idx_healty = np.where(damages == 0)[0]
-
-        for i in idx_healty:
-            healthy_signals.append(signals[i, path_index, :])
-
-        #---------------
-        idx_fissures = np.where(damages > 0)[0]
-
-        for i in idx_fissures:
-
-            cracks_signals.append(signals[i, path_index, :])
-
-            context = f"Damge D{damages[i]} | Weather : {weather[i]} | Temp: {temps[i]:.1f}°C"
-            cracks_info.append(context)
+        if block_size:
+            local_group_id = (np.arange(nb_measurements) // block_size)  # group of `block_size` with consecutive measurements
+        else :
+            local_group_id = np.zeros(nb_measurements, dtype=int)        # one group per file (a month)
 
         #---------------
-        pbar.update(1)
+        X.append(signals[:, path_index, :])
+        y.append((damages > 0).astype(int))
 
-    pbar.close()
+        #---------------
+        groups.append(next_group_id + local_group_id)
+        next_group_id += local_group_id.max() + 1
 
-    #---------------------------------------------
-    print(f"\nhealthy / cracks signals segmentation ...", end="", flush=True)
+        #---------------
+        metas.append(pd.DataFrame({"file"        : os.path.basename(file),
+                                   "damage"      : damages,
+                                   "weather"     : dataset['weather tag'],
+                                   "temperature" : dataset['temperature']}))
 
-    X_train_raw = np.array(healthy_signals)
-    X_test_raw  = np.array(cracks_signals)
+    #------------------------------
+    raw_dataset = GWDataset(name   = "UTAH",
+                            X      = np.vstack(X),
+                            y      = np.concatenate(y),
+                            groups = np.concatenate(groups),
+                            meta   = pd.concat(metas, ignore_index=True))
 
-    print(f"Done\n")
-
-    print(f" -> healthy signals extracted \t: {len(X_train_raw)}")
-    print(f" -> crack signals extracted \t: {len(X_test_raw)}\n")
-
-    #---------------
-    scaler = MinMaxScaler()
-
-    X_train = scaler.fit_transform(X_train_raw)
-
-    if len(X_test_raw) > 0:
-        X_test = scaler.transform(X_test_raw)
-    else:
-        X_test = np.empty((0, X_train_raw.shape[1]))
-        
-    return(X_train, X_test, scaler, cracks_info)
+    return raw_dataset
 
 #================================================================================#
 def UTAH_files(nb_sample: int = 5, data_dir : str = None) -> list:
@@ -134,8 +128,8 @@ def UTAH_files(nb_sample: int = 5, data_dir : str = None) -> list:
 
     Parameters
     ----------
-    nb_sample : number of files to extract from data_dir (default : 5)
-    data_dir  : directory where the UTAH data files are stored (default : UTAH_DIR = "./datasets/UTAH/")
+    nb_sample : number of files to extract from data_dir -- default : nb_sample = 5
+    data_dir  : directory where the UTAH data files are stored -- default : data_dir = UTAH_DIR = "./datasets/UTAH/"
 
     Returns
     ----------

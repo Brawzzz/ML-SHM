@@ -14,10 +14,11 @@ import matplotlib.pyplot as plt
 
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
-from sklearn.preprocessing import MinMaxScaler
 
 import tools
 import setup as stp
+
+from .GWDataset import GWDataset
 
 
 #============================================================================================================================#
@@ -32,88 +33,116 @@ OGW_FILES_EXTENSION    = ".h5"
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
-def OGW_load(nb_cycles: int = None,
-             freq_khz: int = 100,
-             channel: int = 0,
-             base_dir: str = None,
-             damage_states: list = None,
-             verbose: bool = False):
+def OGW_load(nb_cycles     : int  = None,
+             freq_khz      : int  = 100,
+             channel       : int  = 0,
+             dir_path      : str  = None,
+             damage_states : list = None,
+             block_size    : int  = 10) -> GWDataset:
 
     """
-    Load the OGW dataset to return : (X_train, X_test, scaler, labels_test)
+    Load the Open Guided Waves (CFRP, temperature) dataset as a raw GWDataset.
 
-    File format : healthy = '<base>_udam'  |  damaged = '<base>_dam_D04' ... '_dam_D24'
+    For each damage state, the timestamped cycles are read and ONE signal per cycle is kept (one frequency, one path).
+    Signals are returned unscaled : normalization must be fitted on the train set, after the split.
+
+    Damage state : state --> class
+        healthy -- 'udam' 
+        dameged -- 'dam_Dxx'
+                   
+    Expected layout : one folder per state
+        - <dir_path>_udam/ 
+        - <dir_path>_dam_D04/
+        - <dir_path>_dam_D06/
+        - ...
 
     Parameters
     ----------
-    nb_cycles     : timestamped folders per state (None -> all)
-    freq_khz      : excitation frequency to keep
-    channel       : actuator-receiver path index (0..65)
-    base_dir      : '<...>/OGW_CFRP_Temperature' prefix (default : OGW_DIR)
-    damage_states : damage positions (default : D04, D12, D16, D24)
+    nb_cycles     : number of cycles to load per damage state -- defaults : nb_cycles = None
+                    if nb_cycles = None -> all the cycles are load
 
-    Returns
+    freq_khz      : excitation frequency to keep -- defaults : freq_khz = 100
+    channel       : actuator-receiver path index (0-65) -- defaults : channel = 0
+    dir_path      : path to the data directory -- defaults : dir_path = None 
+                    if dir_path = None -> set to OGW_DIR
+
+    damage_states : damage positions to load -- defaults : damage_states = None
+                    if damage_states = None -> set to D04, D12, D16, D24
+
+    block_size    : number of consecutive cycles per group
+                    consecutive cycles are almost identical, so they must stay in the same split
+
+    Returns:
     ----------
-    (X_train, X_test, scaler, labels_test)
-
-    X_train     :
-    X_test      : 
-    scaler      : 
-    labels_test : 
-    """
+    raw_dataset : GWDataset oject containing 
     
+        X      : signals of the selected path -- shape (n_signals, signal_length)
+        y      : signal's labels
+                    - 0 = healthy (damage tag == 0)
+                    - 1 = damaged (damage tag > 0)
+
+        groups : acquisition block of each signal, chronological ids (0 = oldest)
+                    ids restart at 0 in each file, then are shifted to be unique across files
+
+        meta   : signal's metadata, one row per signal -- columns : file, damage, weather, temperature
+
+    Notes
+    ----------
+    A missing damage state folder is skipped (a message is printed).
+    splits() needs at least 2 groups per class : lower block_size if the split fails.
+    """
+
     #---------------------------------------------
-    if base_dir is None:      
+    if os.path.exists(dir_path):
+        base_dir = dir_path  
+    else:
         base_dir = OGW_DIR
 
-    if damage_states is None: 
-        damage_states = ["D04", "D12", "D16", "D24"]
+    damage_states = damage_states or ["D04", "D12", "D16", "D24"]
+    states        = [("udam", 0)] + [(f"dam_{d}", 1) for d in damage_states]
 
-    #---------------------------------------------
-    X_healthy, df_h = _load_state(base_dir + "_udam", nb_cycles, freq_khz, channel)
-    if df_h is None or df_h.empty:
-        raise RuntimeError("no healthy (udam) OGW data found")
-    
-    X_healthy = _extract_matrix(df_h, channel, "catch")
+    #-------------------------
+    next_group_id         = 0
+    (X, y, groups, metas) = ([], [], [], [])
 
-    #---------------------------------------------
-    (crack_list, labels) = [], []
+    for (state, label) in states:
 
-    for d in damage_states:
-        
-        (X_c, df_c) = _load_state(base_dir + "_dam_" + d, nb_cycles, freq_khz, channel)
+        (M, df) = _load_state(f"{base_dir}_{state}", nb_cycles, freq_khz, channel)
 
-        if df_c is None or df_c.empty:
+        #---------------
+        if df is None:
             continue
 
-        crack_list.append(X_c)
-        labels += [f"Damage {d} | Temp: {t:.1f}C" for t in df_c["temperature"].values]
+        local_group_id = df["cycle_index"].to_numpy() // block_size
 
-    #--------------------
-    if crack_list:
-        X_crack = np.vstack(crack_list)
-    else:
-        X_crack = np.empty((0, X_healthy.shape[1]))
+        X.append(M)
+        y.append(np.full(len(M), label))
 
-    #---------------------------------------------
-    scaler  = MinMaxScaler()
-    X_train = scaler.fit_transform(X_healthy)
-    X_test  = scaler.transform(X_crack) if len(X_crack) else np.empty((0, X_healthy.shape[1]))
+        groups.append(next_group_id + local_group_id)
+        next_group_id += local_group_id.max() + 1
 
-    #--------------------
-    if verbose:
-        print(f" -> OGW healthy : {len(X_train)} | damaged : {len(X_test)}")
-        
-    return(X_train, X_test, scaler, labels)
+        metas.append(df.drop(columns=["catch", "pitch"], errors="ignore"))
+
+    #-------------------------
+    if not X or not (np.concatenate(y) == 0).any():
+        raise RuntimeError("no healthy (udam) OGW data found")
+
+    raw_dataset = GWDataset(name   = "OGW",
+                            X      = np.vstack(X),
+                            y      = np.concatenate(y),
+                            groups = np.concatenate(groups),
+                            meta   = pd.concat(metas, ignore_index=True))
+    
+    return raw_dataset
 
 #================================================================================#
 def OGW_cycles(state_dir: str,
-             n_cycles: int = 1,
-             freqs: list = None,
-             channel: int = None,
-             keep_signals: bool = True,
-             keep_pitch: bool = False,
-             verbose: bool = True) -> dict:
+               n_cycles: int = 1,
+               freqs: list = None,
+               channel: int = None,
+               keep_signals: bool = True,
+               keep_pitch: bool = False,
+               verbose: bool = True) -> dict:
     
     """
     Walk through the timestamped folders (cycles) of ONE damage state of the OGW
@@ -145,8 +174,9 @@ def OGW_cycles(state_dir: str,
     Returns
     ----------
     cycles : dict { timestamp_str : DataFrame }
-             one DataFrame per cycle, 
-             one row per frequency file
+                - one DataFrame per cycle, 
+                - one row per frequency file
+
              columns : 
              (metadata) damage_state, cycle_index, timestamp, freq_khz,
              temperature, temp_probe1/2, temp_chamber, humidity, fs,
@@ -293,8 +323,7 @@ def OGW_concat(cycles: dict) -> pd.DataFrame:
     return df.sort_values(["timestamp", "freq_khz"]).reset_index(drop=True)
 
 #================================================================================#
-def _load_state(state_dir : str, nb_cycles : int, 
-                freq_khz : int, channel : int):
+def _load_state(state_dir : str, nb_cycles : int, freq_khz : int, channel : int):
 
     """
     Load the OGW dataset for ONE damage state (healthy or damaged) and return
