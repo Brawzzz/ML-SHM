@@ -16,7 +16,6 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import Normalize
 
 import tools
-import setup as stp
 
 from .GWDataset import GWDataset
 
@@ -24,19 +23,20 @@ from .GWDataset import GWDataset
 #============================================================================================================================#
 #--------------------------------------------------------- CONSTANT ---------------------------------------------------------#
 #============================================================================================================================#
-OGW_FILES              = []
-OGW_DIR                = stp.DATAS_DIR + "OGW/OGW_CFRP_Temperature/" 
+OGW_DS                = "OGW-2" 
 OGW_FILES_PREFIX       = "pc_f"
 OGW_FILES_SUFIX        = "kHz"
 OGW_FILES_EXTENSION    = ".h5"
+OGW_FILES              = []
 
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
 def OGW_load(nb_cycles     : int  = None,
              freq_khz      : int  = 100,
-             channel       : int  = 0,
+             channels      : int | list[int] = 0,
              dir_path      : str  = None,
+             subset        : str  = OGW_DS,
              damage_states : list = None,
              block_size    : int  = 10) -> GWDataset:
 
@@ -56,20 +56,22 @@ def OGW_load(nb_cycles     : int  = None,
         - <dir_path>_dam_D06/
         - ...
 
-    Parameters
+    Args
     ----------
     nb_cycles     : number of cycles to load per damage state -- defaults : nb_cycles = None
                     if nb_cycles = None -> all the cycles are load
 
-    freq_khz      : excitation frequency to keep -- defaults : freq_khz = 100
-    channel       : actuator-receiver path index (0-65) -- defaults : channel = 0
-    dir_path      : path to the data directory -- defaults : dir_path = None 
-                    if dir_path = None -> set to OGW_DIR
+    freq_khz      : (int) excitation frequency to keep -- defaults : freq_khz = 100
+    channels      : (int) actuator-receiver paths indexes (0-65) -- defaults : channels = 0
+    dir_path      : (str) path to the data directory -- defaults : dir_path = None 
+                    if dir_path = None -> set to OGW_DS
+    subset        : (str) OGW sub-dataset to load --> folder inside `dir_path` -- defaults subset = OGW_DS
+                    e.g. "OGW-2", "OGW_CFRP_Temperature"
 
-    damage_states : damage positions to load -- defaults : damage_states = None
+    damage_states : (list) damage positions to load -- defaults : damage_states = None
                     if damage_states = None -> set to D04, D12, D16, D24
 
-    block_size    : number of consecutive cycles per group
+    block_size    : (int) number of consecutive cycles per group
                     consecutive cycles are almost identical, so they must stay in the same split
 
     Returns:
@@ -93,10 +95,14 @@ def OGW_load(nb_cycles     : int  = None,
     """
 
     #---------------------------------------------
-    if os.path.exists(dir_path):
-        base_dir = dir_path  
-    else:
-        base_dir = OGW_DIR
+    if dir_path is None or not os.path.isdir(dir_path):
+        raise FileNotFoundError(f"[OGW] directory not found : {dir_path}")
+
+    subset_dir = os.path.join(dir_path, subset)
+
+    if not os.path.isdir(subset_dir):
+        available = sorted(d for d in os.listdir(dir_path) if os.path.isdir(os.path.join(dir_path, d)))
+        raise FileNotFoundError(f"[OGW] sub-dataset '{subset}' not found in {dir_path} (available : {available})")
 
     damage_states = damage_states or ["D04", "D12", "D16", "D24"]
     states        = [("udam", 0)] + [(f"dam_{d}", 1) for d in damage_states]
@@ -107,7 +113,10 @@ def OGW_load(nb_cycles     : int  = None,
 
     for (state, label) in states:
 
-        (M, df) = _load_state(f"{base_dir}_{state}", nb_cycles, freq_khz, channel)
+        (M, df) = load_state(state_dir = os.path.join(subset_dir, state), 
+                             nb_cycles = nb_cycles,
+                             freq_khz  = freq_khz, 
+                             channels  = channels)
 
         #---------------
         if df is None:
@@ -127,7 +136,7 @@ def OGW_load(nb_cycles     : int  = None,
     if not X or not (np.concatenate(y) == 0).any():
         raise RuntimeError("no healthy (udam) OGW data found")
 
-    raw_dataset = GWDataset(name   = "OGW",
+    raw_dataset = GWDataset(name   = subset,
                             X      = np.vstack(X),
                             y      = np.concatenate(y),
                             groups = np.concatenate(groups),
@@ -136,16 +145,55 @@ def OGW_load(nb_cycles     : int  = None,
     return raw_dataset
 
 #================================================================================#
-def OGW_cycles(state_dir: str,
-               n_cycles: int = 1,
-               freqs: list = None,
-               channel: int = None,
-               keep_signals: bool = True,
-               keep_pitch: bool = False,
-               verbose: bool = True) -> dict:
+def load_state(state_dir : str, 
+               nb_cycles : int = 1, 
+               freq_khz  : int = 40, 
+               channels  : int |list[int] = 0):
+
+    """
+    Load the OGW dataset for ONE damage state (healthy or damaged) and return
+    the waveform matrix (n_measurements, n_samples) for ONE actuator-receiver path
+
+    Args
+    ----------
+    state_dir : Path to the damage state directory
+    nb_cycles : Number of cycles to load (None -> all)
+    freq_khz  : Frequency in kHz to filter the data
+    channels  : Actuator-receiver path index (0..65) to filter the data
+
+    Returns:
+    ----------
+    tuple : (matrix, DataFrame)
+    """
+
+    #---------------------------------------------
+    if not os.path.isdir(state_dir):
+        print(f"[OGW] state not found, skipped : {state_dir}")
+        return(None, None)
+    
+    cycles = load_cycles(state_dir = state_dir, 
+                         n_cycles  = nb_cycles, 
+                         freqs     = [freq_khz],
+                         channels  = channels)
+    
+    df = concat_cycles(cycles)
+
+    #-------------------------
+    if df.empty:
+        return(None, None)
+    
+    return stack_waveforms(df, channels, "catch"), df
+
+#================================================================================#
+def load_cycles(state_dir    : str,
+                n_cycles     : int  = -1,
+                freqs        : list = None,
+                channels     : int | list[int] = None,
+                keep_signals : bool = True,
+                keep_pitch   : bool = False) -> dict:
     
     """
-    Walk through the timestamped folders (cycles) of ONE damage state of the OGW
+    Look through the timestamped folders (cycles) of ONE damage state of the OGW
     temperature dataset and store each measurement into pandas DataFrames.
  
     Folder layout expected :
@@ -160,16 +208,19 @@ def OGW_cycles(state_dir: str,
                 pc_f60kHz.h5
                 ...
  
-    Parameters
+    Args
     ----------
     state_dir    : path to one damage-state directory (udam or dam_Dxx)
-    n_cycles     : number of timestamped folders to load (None -> all)
-    freqs        : list of frequencies in kHz to keep (None -> all, e.g. [40, 100, 260])
-    channel      : path index 0..65 to keep only one actuator-receiver pair
-                   (None -> keep the full (66, N) array). Strongly reduces memory.
-    keep_signals : store the 'catch' waveform(s) in the DataFrame (object column)
-    keep_pitch   : also store the reference 'pitch' waveform(s)
-    verbose      : print progress / memory estimate
+    n_cycles     : number of timestamped folders to load -- defaults n_cycles = 1 
+                   if nb_cycles > 0 or None -> loads all cycles
+
+    freqs        : list of frequencies in kHz to keep --  defauts freqs = None
+                   if freqs = None -> all freq are kept
+    
+    channels     : paths indexes 0 - 65 --defaults = 0
+
+    keep_signals : store the 'catch' waveform(s) in the DataFrame -- defualt keep_signals = True 
+    keep_pitch   : also store the reference 'pitch' waveform(s) -- defaults keep_pitch = False 
  
     Returns
     ----------
@@ -187,37 +238,27 @@ def OGW_cycles(state_dir: str,
     #---------------------------------------------
     if not os.path.isdir(state_dir):
         raise NotADirectoryError(f"state_dir not found : {state_dir}")
- 
-    damage_state    = os.path.basename(os.path.normpath(state_dir))
-    subdirs         = tools.sort_timestamp_data(state_dir=state_dir, n_cycles=n_cycles)
-
+    
+    damage_state = os.path.basename(os.path.normpath(state_dir))
+    subdirs      = tools.sort_timestamp_data(state_dir=state_dir, n_cycles=n_cycles)
+    
     #------------------------------
-    if verbose and keep_signals and channel is None:
+    cycles = {} 
+    pbar   = tqdm.tqdm(subdirs, desc=f"Loading OGW {damage_state} cycles", unit="cycle")
 
-        memory_estimation = tools.memory_estimate(n_subdirs=subdirs, 
-                                                  n_keep_pitch=keep_pitch,
-                                                  n_freqs=freqs)
-
-    #---------------------------------------------
-    print(f"\n[OGW] state '{damage_state}' | {len(subdirs)} cycle(s) to load \n")
- 
-    cycles  = {} 
-    pbar    = tqdm.tqdm(subdirs, desc="Loading OGW cycles", unit="cycle", disable=not verbose)
-
-    #------------------------------
     for cyc_idx, sub in enumerate(pbar):
- 
+
+        rows     = []
         ts_name  = os.path.basename(sub)
         h5_files = sorted(glob.glob(os.path.join(sub, "*.h5")))
-        rows     = []
 
         #------------------------------
         for fp in h5_files:
  
             freq_match = re.search(r"f(\d+)kHz", os.path.basename(fp))
-            freq_khz    = int(freq_match.group(1)) if freq_match else np.nan
+            freq_khz   = int(freq_match.group(1)) if freq_match else np.nan
  
-            if freqs is not None and freq_khz not in freqs:
+            if (freqs is not None) and (freq_khz not in freqs):
                 continue
  
             #---------------
@@ -228,10 +269,10 @@ def OGW_cycles(state_dir: str,
                 fs     = float(f["command/pitchcatch/sampling_frequency"][0])
                 fc     = float(f["command/pitchcatch/signal_frequency"][0])
                 nburst = int(f["command/pitchcatch/signal_cycles"][0])
-                t_vals = np.asarray(f["Temperature/values"][:], dtype=float)
+                T_vals = np.asarray(f["Temperature/values"][:], dtype=float)
  
                 hum    = float(f["CTC/Humidity"][0])     if "CTC/Humidity"    in f else np.nan
-                t_cham = float(f["CTC/Temperature"][0])  if "CTC/Temperature" in f else np.nan
+                T_cham = float(f["CTC/Temperature"][0])  if "CTC/Temperature" in f else np.nan
  
                 pitch  = f["pitchcatch/pitch"][:] if keep_pitch else None
  
@@ -243,10 +284,10 @@ def OGW_cycles(state_dir: str,
                 "cycle_index"  : cyc_idx,
                 "timestamp"    : ts_name,
                 "freq_khz"     : freq_khz,
-                "temperature"  : float(np.mean(t_vals)),
-                "temp_probe1"  : float(t_vals[0]) if t_vals.size > 0 else np.nan,
-                "temp_probe2"  : float(t_vals[1]) if t_vals.size > 1 else np.nan,
-                "temp_chamber" : t_cham,
+                "temperature"  : float(np.mean(T_vals)),
+                "temp_probe1"  : float(T_vals[0]) if T_vals.size > 0 else np.nan,
+                "temp_probe2"  : float(T_vals[1]) if T_vals.size > 1 else np.nan,
+                "temp_chamber" : T_cham,
                 "humidity"     : hum,
                 "fs"           : fs,
                 "signal_freq"  : fc,
@@ -259,7 +300,7 @@ def OGW_cycles(state_dir: str,
             #---------------
             if keep_signals:
 
-                if channel is None:
+                if channels is None:
 
                     row["catch"]    = catch
                     row["channels"] = chans
@@ -268,12 +309,14 @@ def OGW_cycles(state_dir: str,
                         row["pitch"] = pitch
 
                 else:
-                    
-                    row["catch"]        = catch[channel]
-                    row["channel_pair"] = tuple(int(x) for x in chans[channel])
+
+                    ch = np.atleast_1d(channels)
+
+                    row["catch"]        = catch[ch]
+                    row["channel_pair"] = [tuple(int(x) for x in chans[c]) for c in ch]
 
                     if keep_pitch:
-                        row["pitch"] = pitch[channel]
+                        row["pitch"] = pitch[ch]
  
             rows.append(row)
  
@@ -286,33 +329,23 @@ def OGW_cycles(state_dir: str,
  
     pbar.close()
  
-    #---------------------------------------------
-    if verbose:
-
-        n_files = sum(len(df) for df in cycles.values())
-        t_min   = min(df["temperature"].min() for df in cycles.values() if len(df))
-        t_max   = max(df["temperature"].max() for df in cycles.values() if len(df))
-
-        print(f"\n[OGW] done : {len(cycles)} cycles, {n_files} files, "
-              f"T in [{t_min:.1f}, {t_max:.1f}] C \n")
- 
     return cycles
 
 #================================================================================#
-def OGW_concat(cycles: dict) -> pd.DataFrame:
+def concat_cycles(cycles: dict) -> pd.DataFrame:
  
     """
     Merge the per-cycle DataFrames returned by OGW_load() into a single
-    tidy DataFrame (one row per file). Convenient for a temperature sweep or to
-    feed the validation block.
+    tidy DataFrame (one row per file). 
+    Convenient for a temperature sweep or to feed the validation block.
  
-    Parameters
+    Args
     ----------
-    cycles : dict {timestamp : DataFrame} from OGW_cycles()
+    cycles : dict {timestamp : DataFrame} from load_cycles()
  
     Returns
     ----------
-    df : concatenated DataFrame, chronologically ordered
+    df : (pd.DataFrame) concatenated DataFrame, chronologically ordered
     """
  
     #---------------------------------------------
@@ -323,79 +356,64 @@ def OGW_concat(cycles: dict) -> pd.DataFrame:
     return df.sort_values(["timestamp", "freq_khz"]).reset_index(drop=True)
 
 #================================================================================#
-def _load_state(state_dir : str, nb_cycles : int, freq_khz : int, channel : int):
+def stack_waveforms(df         : pd.DataFrame, 
+                    channels   : int | list[int] = 0, 
+                    signal_col : str = "catch") -> np.ndarray:
 
     """
-    Load the OGW dataset for ONE damage state (healthy or damaged) and return
-    the waveform matrix (n_measurements, n_samples) for ONE actuator-receiver path
+    Stack the waveforms stored in `df[signal_col]` into a (n_measurements, n_samples) array,
+    keeping ONE actuator-receiver path.
 
-    Parameters:
-    ----------
-    state_dir : Path to the damage state directory
-    nb_cycles : Number of cycles to load (None -> all)
-    freq_khz  : Frequency in kHz to filter the data
-    channel   : Actuator-receiver path index (0..65) to filter the data
+    Each cell holds either : 
+        - the full array (n_paths, n_samples) -- loaded with channel=None
+        - or a single path (n_samples,) already selected at loading (channel=<int>).
 
-    Returns:
+    Args
     ----------
-    tuple : (matrix, DataFrame)
+    df         : (pd.DataFrame) DataFrame from OGW_load()[ts] or concat_cycles()
+    channels   : (int | list[int]) 
+    signal_col : (str) 'catch' (received) or 'pitch' (reference)
+
+    Returns
+    ----------
+    waveforms : (np.ndarray) waveforms of `df[signal_col] for one actuator-receiver path
     """
 
     #---------------------------------------------
-    if not os.path.isdir(state_dir):
-        print(f"[OGW] state not found, skipped : {state_dir}")
-        return None, None
+    if channels is None:
+      return np.stack([np.atleast_2d(np.asarray(c)) for c in df[signal_col].values])
     
-    cycles = OGW_cycles(state_dir, 
-                        n_cycles=nb_cycles, 
-                        freqs=[freq_khz],
-                        channel=channel, 
-                        verbose=False)
-    
-    df = OGW_concat(cycles)
+    if df["freq_khz"].nunique() > 1:
+        raise ValueError(f"several frequencies in df : {sorted(df['freq_khz'].unique())} -- filter first")
 
-    #-------------------------
-    if df.empty:
-        return None, None
-    
-    return _extract_matrix(df, channel, "catch"), df
+    channels = np.atleast_1d(channels)
+    sigs     = []
+
+    #--------------------
+    for (i, cell) in enumerate(df[signal_col].values):
+
+        arr = np.atleast_2d(np.asarray(cell))
+
+        if arr.shape[0] != len(channels):              
+            arr = arr[channels]
+
+        sigs.append(arr)
+
+    #--------------------
+    if len({s.shape for s in sigs}) > 1:
+        raise ValueError(f"waveforms of different shapes : {sorted({s.shape for s in sigs})}")
+
+    return np.stack(sigs)
 
 #================================================================================#
-def _extract_matrix(df: pd.DataFrame, channel: int, signal_col: str):
- 
-    """
-    Build the (n_measurements, n_samples) waveform matrix for ONE path from the
-    DataFrame produced by OGW_cycles(). Handles both storage cases : full
-    (66, N) cell (channel is used to index) or already-1D cell (channel ignored).
-
-    Parameters:
-    ----------
-    df          : DataFrame containing the waveform data
-    channel     : Actuator-receiver path index
-    signal_col  : Column name containing the signal data
-
-    Returns:
-    ----------
-    2D array of shape (n_measurements, n_samples) containing the waveform data
-    """
- 
-    #---------------------------------------------
-    sigs = []
-    for cell in df[signal_col].values:
-        arr = np.asarray(cell)
-        sigs.append(arr[channel] if arr.ndim == 2 else arr)
- 
-    return np.vstack(sigs)
-
-#================================================================================#
-def OGW_plot(df: pd.DataFrame,
-             channel: int = 0,
-             freq_khz: int = None,
-             signal_col: str = "catch",
-             n_waveforms: int = 8,
-             cmap_scan: str = "RdBu_r",
-             cmap_temp: str = "coolwarm",
-             save_path: str = None) -> None:
+def OGW_plot(df          : pd.DataFrame,
+             channels    : int | list[int] = 0,
+             freq_khz    : int = None,
+             signal_col  : str = "catch",
+             n_waveforms : int = 8,
+             cmap_scan   : str = "RdBu_r",
+             cmap_temp   : str = "coolwarm",
+             save_path   : str = None) -> None:
  
     """
     Graphical overview of the OGW guided-wave data for ONE actuator-receiver path
@@ -409,16 +427,20 @@ def OGW_plot(df: pd.DataFrame,
       3. thermal profile of the loaded measurements (acquisition order)
       4. signal RMS vs temperature (scalar-feature drift)
  
-    Parameters
+    Args
     ----------
-    df           : DataFrame from OGW_load_cycles()[ts] or OGW_concat()
-    channel      : path index 0..65 (ignored if signals were stored single-path)
-    freq_khz     : frequency to display (None -> the first one found in df)
-    signal_col   : 'catch' (received) or 'pitch' (reference)
-    n_waveforms  : number of waveforms overlaid in panel 1
-    cmap_scan    : diverging colormap for the B-scan (signed amplitude)
-    cmap_temp    : sequential/thermal colormap encoding temperature
-    save_path    : if given, save the figure instead of only showing it
+    df           : (pd.DataFrame) DataFrame from OGW_load()[ts] or concat_cycles()
+    channels      : (int) path index 0 - 65 (ignored if signals were stored single-path)
+    freq_khz     : (int) frequency to display (None -> the first one found in df)
+    signal_col   : (str) 'catch' (received) or 'pitch' (reference)
+    n_waveforms  : (int) number of waveforms overlaid in panel 1
+    cmap_scan    : (str) diverging colormap for the B-scan (signed amplitude)
+    cmap_temp    : (str) sequential/thermal colormap encoding temperature
+    save_path    : (str) if given, save the figure instead of only showing it
+
+    Returns
+    ----------
+    None
     """
  
     #---------------------------------------------
@@ -437,7 +459,7 @@ def OGW_plot(df: pd.DataFrame,
     sub = sub.sort_values("temperature").reset_index(drop=True)
  
     #---------------------------------------------
-    M           = _extract_matrix(sub, channel, signal_col)
+    M           = stack_waveforms(sub, channels, signal_col)[:, 0, :]
     temps       = sub["temperature"].values
     fs          = float(sub["fs"].iloc[0])
     (n_meas, N) = M.shape
@@ -451,7 +473,7 @@ def OGW_plot(df: pd.DataFrame,
     if "channel_pair" in sub.columns:
         pair = f" (paire {sub['channel_pair'].iloc[0]})"
     elif "channels" in sub.columns:
-        pair = f" (paire {tuple(int(x) for x in np.asarray(sub['channels'].iloc[0])[channel])})"
+        pair = f" (paire {tuple(int(x) for x in np.asarray(sub['channels'].iloc[0])[channels])})"
  
     #---------------------------------------------
     sns.set_theme(style="whitegrid")
@@ -467,7 +489,7 @@ def OGW_plot(df: pd.DataFrame,
  
     sm = ScalarMappable(norm=norm, cmap=cmap); sm.set_array([])
     fig.colorbar(sm, ax=axes[0, 0], label="Température (°C)")
-    axes[0, 0].set_title(f"Signaux {signal_col} — chemin {channel}{pair}, {freq_khz} kHz", fontsize=13)
+    axes[0, 0].set_title(f"Signaux {signal_col} — chemin {channels}{pair}, {freq_khz} kHz", fontsize=13)
     axes[0, 0].set_xlabel(f"Temps ({unit})")
     axes[0, 0].set_ylabel("Amplitude")
  

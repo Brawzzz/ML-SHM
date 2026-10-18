@@ -38,39 +38,45 @@ class GWDataset :
     groups : np.ndarray
     meta   : pd.DataFrame = field(default_factory=pd.DataFrame)
 
-
     #================================================================================#
     def __post_init__(self):
 
         """
         verification of data validity : shape, dimensions 
-
+        
         execute automaticly after the instanciation of a GWDataset object 
         """
-
         #---------------------------------------------
         self.X      = np.asarray(self.X, dtype=np.float32)
         self.y      = np.asarray(self.y, dtype=np.int64)
         self.groups = np.asarray(self.groups, dtype=np.int64)
 
-        if self.X.ndim != 2:
-            raise ValueError(f"X must be 2D (n_signals, signal_length) -- shape : {self.X.shape}")
+        if self.X.ndim == 2:                 
+            self.X = self.X[:, None, :]
+
+        if self.X.ndim != 3:
+            raise ValueError(f"X must be (n_signals, n_channels, signal_length) -- shape : {self.X.shape}")
 
         if not (len(self.X) == len(self.y) == len(self.groups)):
             raise ValueError(f"X, y and groups must have the same length : "
-                             f"{len(self.X)}, {len(self.y)}, {len(self.groups)}")
+                            f"{len(self.X)}, {len(self.y)}, {len(self.groups)}")
 
         if len(self.meta) and len(self.meta) != len(self.X):
             raise ValueError(f"meta must have one row per signal : {len(self.meta)} != {len(self.X)}")
 
     #================================================================================#
-    def __str__(self):
-        return self.describe()
+    @property
+    def signal_length(self) -> int:
+        return self.X.shape[-1]
 
     #================================================================================#
     @property
-    def signal_length(self) -> int:
+    def n_channels(self) -> int:
         return self.X.shape[1]
+
+    #================================================================================#
+    def __str__(self):
+        return self.describe()
 
     #================================================================================#
     def describe(self) -> str:
@@ -85,7 +91,7 @@ class GWDataset :
         signal length  : 2000
         blocks         : 1189
 
-        Parameters:
+        Args
         ----------
         None
 
@@ -101,7 +107,8 @@ class GWDataset :
         lines = [f"\n//-------------------- GWDataset | {self.name} dataset --------------------//\n",
                  f"Loaded signals : {len(self.X)} (healthy : {n_healthy} | damaged : {n_damaged})",
                  f"signal length  : {self.signal_length}",
-                 f"blocks         : {len(np.unique(self.groups))}"]
+                 f"blocks         : {len(np.unique(self.groups))}",
+                 f"channels       : {self.n_channels}"]
 
         desc = "\n".join(lines) + "\n"
 

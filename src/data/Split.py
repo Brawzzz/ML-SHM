@@ -1,6 +1,7 @@
 #============================================================================================================================#
 #---------------------------------------------------------- IMPORT ----------------------------------------------------------#
 #============================================================================================================================#
+import os
 import itertools
 import numpy as np
 
@@ -44,7 +45,7 @@ class Splits:
             2 - no overlap between train | validation | test sets
             3 - no healthy block shared between sets
             
-        Parameters
+        Args
         ----------
         ds : loaded guided wave dataset
         """
@@ -85,7 +86,7 @@ class Splits:
         validation : healthy   1976 (  9.9 %) | damaged  27451 ( 69.9 %) | blocks   594
         test       : healthy   2016 ( 10.1 %) | damaged  11810 ( 30.1 %) | blocks   279
 
-        Parameters: 
+        Args
         ----------
         ds : loaded guided wave dataset
 
@@ -122,6 +123,34 @@ class Splits:
 
         return desc
 
+    #================================================================================#
+    def save(self, 
+             path : str, 
+             ds   : GWDataset) -> None:
+
+        """
+        Save a split in `path` 
+
+        Args
+        ----------
+        path : (str) file path where to save the Split 
+        ds   : (GWDataset) data stroed in a GWDataset object
+
+        Returns
+        ----------
+        None
+        """
+
+        #---------------------------------------------
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+        np.savez(path,
+                 train      = self.train,
+                 validation = self.validation,
+                 test       = self.test,
+                 y          = ds.y,         
+                 groups     = ds.groups)
+
 #============================================================================================================================#
 #--------------------------------------------------------- FUNCTION ---------------------------------------------------------#
 #============================================================================================================================#
@@ -129,10 +158,46 @@ def _count(ds : GWDataset, idx, value):
     return int((ds.y[idx] == value).sum())
 
 #================================================================================#
-def splits(ds          : GWDataset,
-           train_ratio : float = 0.8,
-           val_ratio   : float = 0.5,
-           seed        : int   = 0) -> Splits:
+def load_splits(path : str, ds : GWDataset) -> Splits:
+
+    """
+    Load a split from a file 
+
+    Args
+    ----------
+    path : (str) path to the saved split
+    ds   : (GWDataset) splitted dataset
+
+    Return
+    ----------
+    splits : (Splits) loaded split
+    
+    """
+
+    #---------------------------------------------
+    split_file = np.load(path)
+
+    same_dataset = ("y" in split_file and "groups" in split_file
+                    and np.array_equal(split_file["y"],      ds.y)
+                    and np.array_equal(split_file["groups"], ds.groups))
+    
+    if not same_dataset:
+        raise ValueError(f"split {path} was made on another version of the {ds.name} dataset")
+
+    #-------------------------
+    splits = Splits(train      = split_file["train"], 
+                    validation = split_file["validation"], 
+                    test       = split_file["test"])
+    
+    splits.check(ds)
+
+    return splits
+    
+#================================================================================#
+def split(ds          : GWDataset,
+          train_ratio : float = 0.8,
+          val_ratio   : float = 0.5,
+          seed        : int   = 0) -> Splits:
 
     """
     Split a guided-wave dataset into Train | Validation | Test sets, by acquisition groups.
@@ -151,14 +216,13 @@ def splits(ds          : GWDataset,
     The validation set is used for early stopping, threshold selection and hyperparameter tuning. 
     The test set is only used for the final evaluation.
 
-    Parameters
+    Args
     ----------
-    ds : raw loaded guided waves dataset
+    ds : (GWDataset) raw loaded guided waves dataset
     
     train_ratio : (float) proportion of healthy signals used for training
     val_ratio   : (float) proportion of damaged signals used for validation
-
-    seed : random seed
+    seed        : (int) random seed
 
     Returns
     ----------
@@ -192,7 +256,7 @@ def splits(ds          : GWDataset,
                       1 - val_ratio]
 
     healthy_parts = assign(healthy_idx, ds.groups, healthy_ratios, rng_seed=seed)
-    damaged_parts = assign(damaged_idx, ds.groups, damaged_ratios, rng_seed=seed)
+    damaged_parts = assign(damaged_idx, ds.groups, damaged_ratios, rng_seed=seed+1)
     
     #---------------------------------------------
     split = Splits(train      = np.sort(np.concatenate([healthy_parts[0], damaged_parts[0]])).astype(int),
@@ -213,12 +277,12 @@ def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42)
     This function uses a successive approach to ensure there is no data leakage between the sets.
     It is using two successive GroupShuffleSplits
 
-    Parameters:
+    Args
     ----------
     indices   : index of a specific class (healthy or damaged)
     groups    : Tabs of groups labels corresponding to data. 
                 The length must at least be equal to the max value in 'indices`.
-    ratios    : wanted amount of the data in each sets -- [train, validation, test] -- defaults [80., 20., 20.]
+    ratios    : wanted amount of the data in each sets -- [train, validation, test] -- defaults [80., 10., 10.]
     rng_seed  : random generator seed
 
     Returns:
@@ -241,7 +305,7 @@ def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42)
                                  test_size      = (r_validation + r_test), 
                                  random_state   = rng_seed)
         
-        (train_idx, tmp_idx)     = next(gss1.split(indices, groups=groups[indices]))
+        (train_idx,   tmp_idx)   = next(gss1.split(indices, groups=groups[indices]))
         (train_index, tmp_index) = (indices[train_idx], indices[tmp_idx])
 
     #-------------------------
@@ -256,7 +320,7 @@ def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42)
                                  test_size          = r_test / (r_validation + r_test), 
                                  random_state       = rng_seed)
 
-        (validation_idx, test_idx)     = next(gss2.split(tmp_index, groups=groups[tmp_index]))
+        (validation_idx,   test_idx)   = next(gss2.split(tmp_index, groups=groups[tmp_index]))
         (validation_index, test_index) = (tmp_index[validation_idx], tmp_index[test_idx])
 
     train       = np.sort(train_index)

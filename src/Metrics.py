@@ -1,11 +1,10 @@
 #============================================================================================================================#
 #---------------------------------------------------------- IMPORT ----------------------------------------------------------#
 #============================================================================================================================#
+import os
 import numpy as np
 import pandas as pd
-import seaborn as sns
 import sklearn.metrics as skm
-import matplotlib.pyplot as plt
 
 
 #============================================================================================================================#
@@ -14,18 +13,13 @@ import matplotlib.pyplot as plt
 class Metrics:
 
     """
-    Metrics to compare models from damage state : dammaged = positive = 1
+    Metrics to compare models from damage state : damaged = positive = 1
 
     Attributes
     ----------
-    y_true : np.ndarray
-        True labels (0 for healthy, 1 for damaged).
-
-    y_score : np.ndarray
-        Predicted scores or probabilities for the positive class (damaged).
-
-    name : str
-        Name of the model or metric set for identification in plots and reports.s
+    y_true  : (np.ndarray) labels -> 0 for healthy | 1 for damaged
+    y_score : (np.ndarray) predicted scores or probabilities for the positive class (damaged).
+    name    : (str) mame of the model or metric set for identification in plots and reports
     """
 
     #================================================================================#
@@ -45,6 +39,44 @@ class Metrics:
 
         return cls(y_true, y_score, name=name)
 
+    #================================================================================#
+    def _mixed_signals(self):
+        
+        """
+        return true if the set contains healthy AND damaged signals
+        """
+        #---------------------------------------------
+        return len(np.unique(self.y_true)) == 2
+    
+    #================================================================================#
+    def objective(self, name: str) -> float:
+
+        """
+        Value to optimise by the hyperparameter search : "pr_auc" or "roc_auc"
+        (computed exclusively on validation set)
+
+        Args:
+        ----------
+        name : (str) name of the value to optimize
+
+        Returns
+        ----------
+        (float) : computed criterion value
+        """
+
+        #---------------------------------------------
+        if not self._mixed_signals() :
+            raise ValueError(f"'{name}' needs healthy AND damaged signals "
+                             f"(increase the damaged ratio in validation or use the objective 'val_loss')")
+
+        if name == "pr_auc":
+            return self.PR_auc()
+
+        if name == "roc_auc":
+            return self.ROC_auc()
+
+        raise ValueError(f"unknown objective : {name} (expected 'pr_auc' or 'roc_auc')")
+    
     #================================================================================#
     def PR_auc(self) -> float:   
 
@@ -73,108 +105,14 @@ class Metrics:
         return skm.roc_auc_score(self.y_true, self.y_score)
 
     #================================================================================#
-    def PR_curve(self, ax=None, show: bool = True) -> float:
-
-        """
-        plot PR - Precision-Recall curve and return AUC score
-
-        Parameters
-        ----------
-        ax      : Axes to plot on -- if None, a new figure and axes will be created -- default None.
-        show    : Whether to display the plot -- default True.
-
-        Returns
-        ----------
-        pr_auc : Area Under the Curve (AUC) score for the PR curve.
-        """
-
-        #---------------------------------------------
-        pr_auc                 = self.PR_auc()
-        (precision, recall, _) = skm.precision_recall_curve(self.y_true, self.y_score)
-
-        #-------------------------
-        base = self.y_true.mean()
-
-        if ax is None:
-            label   = f"Baseline ({base:.3f})"
-            (_, ax) = plt.subplots(figsize=(7, 6))
-            sns.set_theme(style="whitegrid");
-        else:
-            label = None
-
-        #-------------------------
-        ax.plot(recall, precision, lw=2, label=f"{self.name or 'PR'} (AP={pr_auc:.3f})")
-        ax.axhline(base, color="grey", lw=1, ls="--",label=label)
-
-        ax.set_title("Courbe Precision-Recall")
-        ax.set_xlabel("Recall")
-        ax.set_ylabel("Precision")
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1.02)
-
-        ax.legend(loc="lower left")
-
-        #-------------------------
-        if ax is None and show : 
-            plt.show()
-
-        return pr_auc
-
-    #================================================================================#
-    def ROC_curve(self, ax=None, show: bool = True) -> float:
-
-        """
-        plot ROC curve and return AUC score
-
-        Parameters
-        ----------
-        ax      : Axes to plot on -- if None, a new figure and axes will be created -- default None.
-        show    : Whether to display the plot -- default True.
-
-        Returns
-        ----------
-        roc_auc : Area Under the Curve (AUC) score for the ROC curve.
-        """
-
-        #---------------------------------------------
-        roc_auc         = self.ROC_auc()
-        (f_pr, t_pr, _) = skm.roc_curve(self.y_true, self.y_score)
-
-        #-------------------------
-        if ax is None:
-            label   = ("Aléatoire")
-            (_, ax) = plt.subplots(figsize=(7, 6))
-            sns.set_theme(style="whitegrid")
-            
-        else:
-            label = None
-
-        #-------------------------
-        ax.plot(f_pr, t_pr, lw=2, label=f"{self.name or 'ROC'} (AUC={roc_auc:.3f})")
-        ax.plot([0, 1], [0, 1], color="grey", lw=1, ls="--", label=label)
-
-        ax.set_title("Courbe ROC")
-        ax.set_xlabel("FPR (fausses alarmes)")
-        ax.set_ylabel("TPR (rappel)")
-        ax.set_xlim(0, 1); ax.set_ylim(0, 1.02)
-
-        ax.legend(loc="lower right")
-
-        #-------------------------
-        if ax is None and show :
-            plt.show()
-
-        return roc_auc
-
-    #================================================================================#
     def at_threshold(self, thr : float) -> dict:
 
         """
         Compute different metrics for a model at a specific threshold
 
-        Parameters
+        Args
         ----------
-        thr : Threshold value for classification.
+        thr : (float) threshold value for classification.
         
         Returns
         ----------
@@ -186,7 +124,7 @@ class Metrics:
         """
 
         #---------------------------------------------
-        CM = self.confusion(threshold=thr, plot=False)
+        CM = self.confusion(thr=thr)
 
         TP = CM[1, 1]
         FP = CM[0, 1]
@@ -214,82 +152,40 @@ class Metrics:
         return metrics
     
     #================================================================================#
-    def confusion(self, threshold : float, plot : bool = False, ax=None) -> np.ndarray:
+    def confusion(self, thr : float) -> np.ndarray:
 
         """
-        Compute and plot the confusion matrix based on the threshold.
+        Compute the confusion matrix on a specific threshold.
 
-        Parameters
+        Args
         ----------
-        threshold   : Threshold value for classification.
-        plot        : Whether to plot the confusion matrix -- default false
-        ax          : Axes object for plotting -- default None
+        thr : (float) threshold value for classification.
 
         Returns
         ----------
-        CM : Confusion matrix as a 2D array.
+        CM : (np.ndarray) confusion matrix as a 2D array.
         """
 
         #---------------------------------------------
-        y_pred  = (self.y_score > threshold).astype(int)
+        y_pred  = (self.y_score > thr).astype(int)
         CM      = skm.confusion_matrix(self.y_true, y_pred, labels=[0, 1])
 
-        #-------------------------
-        if plot:
-            
-            if ax is None:
-                (_, ax) = plt.subplots(figsize=(6, 5))
-
-            #-------------------------
-            ax.set_title("Confusion Matrix", fontsize=14)
-            sns.heatmap(data=CM, 
-                        annot=True, 
-                        fmt="d", 
-                        cmap="Blues", 
-                        ax=ax,
-                        xticklabels=["Predicted Healthy", "Predicted Damaged"],
-                        yticklabels=["Healthy", "Damaged"])
-        
         return CM
 
     #================================================================================#
-    def distribution_error(self, threshold: float, ax : plt.Axes) -> None:
-
-        """
-        MSE histogramme healty / dammaged + threshold line
-
-        Parameters
-        ----------
-        threshold   : Threshold value for classification.
-        ax          : Axes object for plotting.
-
-        Returns
-        ----------
-        None
-        """
-        
-        #---------------------------------------------
-        healthy = self.y_score[self.y_true == 0]
-        damaged = self.y_score[self.y_true == 1]
+    def summary(self, 
+                thr      : float = None, 
+                show     : bool  = False, 
+                save_dir : str   = None) -> dict:
  
-        sns.histplot(healthy, bins=50, color="green", alpha=0.6, label="Healthy", ax=ax, stat="density")
-        sns.histplot(damaged, bins=50, color="red",   alpha=0.5, label="Damaged", ax=ax, stat="density")
-
-        ax.axvline(threshold, color="black", linestyle="dashed", linewidth=2, label="Warning threshold")
-        ax.set_title("Reconstruction error separation", fontsize=14)
-        ax.set_xlabel("MSE Error"); ax.set_ylabel("Number of signal"); ax.legend()
-    
-    #================================================================================#
-    def summary(self, thr: float = None, show : bool = False, save : bool = False) -> dict:
-
         """
         Summarize all the metrics of a model in a dictionary.
-
-        Parameters
+ 
+        Args
         ----------
-        thr     : Optional threshold value for classification. If provided, additional metrics will be included.
-        plot    : wether to show the plot -- defaults False
-        save    : wether to save the plot -- defaults False
+        thr      : (float) Optional threshold value for classification. If provided, additional metrics will be included.
+        show     : (bool) whether to print the metrics -- defaults False
+        save_dir : (bool) directory where to save the metrics as a csv file -- defaults ./results -- if None no save
 
         Returns
         ----------
@@ -303,8 +199,13 @@ class Metrics:
         """
 
         #---------------------------------------------
-        summary_dict = {"PR-AUC": self.PR_auc(), "ROC-AUC": self.ROC_auc()}
+        if self._mixed_signals():
+            summary_dict = {"PR-AUC": self.PR_auc(), "ROC-AUC": self.ROC_auc()}
 
+        else:
+            summary_dict = {"PR-AUC": float("nan"), "ROC-AUC": float("nan")}
+
+        #--------------------
         if thr is not None:
 
             pt = self.at_threshold(thr)
@@ -331,17 +232,17 @@ class Metrics:
             if thr is not None:
                 print(f"  (threshold = {thr:.2e})")
                 
-            print("#------------------------------------------#\n")
+            print("#-----------------------------------------------#\n")
 
         #-------------------------
-        if save:
+        if save_dir is not None:
 
-            tag       = f"_at_{thr:.5f}" if thr is not None else ""
-            save_path = f"./models/{self.name}_metrics{tag}.csv"
+            os.makedirs(save_dir, exist_ok=True)
 
-            df_metrics = pd.DataFrame(summary_dict, index=[0])
-            df_metrics.to_csv(save_path, index=False)
+            thr_tag   = f"_at_{thr:.5f}" if thr is not None else ""
+            save_path = os.path.join(save_dir, f"{self.name}_metrics{thr_tag}.csv")
 
+            pd.DataFrame(summary_dict, index=[0]).to_csv(save_path, index=False)
             print(f"Metrics saved at : {save_path}")
 
         return summary_dict
@@ -380,72 +281,82 @@ def _fpr(FP : float, TN : float):
     return fpr
 
 #================================================================================#
-def model_report(metrics : "Metrics", 
-                 threshold : float, 
-                 train_losses : list = None, 
-                 save : bool = False) -> None:
+def select_threshold(scores : np.ndarray,
+                     y      : np.ndarray = None, 
+                     method : str        = "mean_std", 
+                     value  : float      = 3.0) -> float:
 
     """
-    Performance report of a model
+    Computes the alert threshold on the healthy validation scores only.
+    Computation depends on the given `method`.
 
-    Parameters
+    Args
     ----------
-    metrics         : Metrics object containing the model's performance metrics.
-    threshold       : Threshold value for classification.
-    train_losses    : Optional list of training losses for plotting the learning curve -- defaults None
-    save            : Whether to save the plot -- defaults False
+    healthy_scores : (np.ndarray) anomaly scores of the healthy validation signals
+    method         : (str) determines the method to compute the threshold alert 
+                        "mean_std" -> mean + value * std 
+                        "quantile" -> value-quantile of the healthy scores 
+    value          : (float) coefficiant depending on `method`
+                        "mean_std" -> k :
+                        "quantile" -> q :
+
+                    Compromise :     
+                        value plus petit  →  seuil plus bas   →  rappel ↑   fausses alarmes ↑
+                        value plus grand  →  seuil plus haut  →  rappel ↓   fausses alarmes ↓
 
     Returns
     ----------
-    None
+    threshold : (float) computed threshold based on the given `method`
     """
 
     #---------------------------------------------
-    sns.set_theme(style="whitegrid")
+    scores         = np.asarray(scores, dtype=float)
+    healthy_scores = scores if y is None else scores[np.asarray(y) == 0]
 
-    if train_losses is not None :
-        n_subplots = 3 
-    else : 
-        n_subplots = 2
+    if len(healthy_scores) == 0:
+        raise ValueError("no healthy validation signal to compute the threshold")
 
-    (fig, axes) = plt.subplots(1, n_subplots, figsize=(6 * n_subplots, 5))
-    axes        = np.atleast_1d(axes)
+    #--------------------
+    if method == "mean_std":
 
-    #------------------------
-    subplot_idx = 0
+        threshold = float(np.mean(healthy_scores) + value * np.std(healthy_scores))
+        return threshold
 
-    if train_losses is not None:
-        learning_curve(axes[subplot_idx], train_losses)           
-        subplot_idx += 1
+    #--------------------
+    if method == "quantile":
 
-    #--------------
-    metrics.distribution_error(threshold, ax=axes[subplot_idx])
-    subplot_idx += 1
-    CM = metrics.confusion(threshold, plot=True, ax=axes[subplot_idx])
+        threshold = float(np.quantile(healthy_scores, value))
+        return threshold
 
-    plt.tight_layout()
-    plt.show()
+    #--------------------
+    if method == "youden":
 
-    #--------------
-    if save: 
-        save_path = f"./models/{metrics.name}_report.png"
-        fig.savefig(save_path, bbox_inches='tight')
+        if y is None or len(np.unique(y)) < 2:
+            raise ValueError("'youden' needs healthy AND damaged validation signals")
+        
+        (fpr, tpr, thr) = skm.roc_curve(y, scores)
+
+        return float(thr[np.argmax(tpr - fpr)])
+
+    #--------------------
+    raise ValueError(f"unknown threshold method : {method} (expected 'mean_std' or 'quantile')")
 
 #================================================================================#
-def learning_curve(ax : plt.Axes, train_losses: list) -> None:
+def summarize_seeds(results: list[dict]) -> dict:
 
     """
-    Plot the learning curve for the training losses.
+    Returns computed mean and standard deviation of each metric over several trainings (seeds).
+    NaN values are ignored (e.g. AUC on a single-class set)
 
-    Parameters
+    Args
     ----------
-    axes            : matplotlib axes object to plot on
-    train_losses    : list of training losses for each epoch
+    results : (list[dict]) metrics of several trainings
+
+    Returns
+    ----------
+    dict : {metric: {"mean": float, "std": float}}
     """
 
     #---------------------------------------------
-    ax.plot(train_losses, label='Train Loss (MSE)', color='blue', linewidth=2)
-    ax.set_title('Learning Curve', fontsize=14)
-    ax.set_xlabel('Epochs')
-    ax.set_ylabel('Reconstruction Error (MSE)')
-    ax.legend()
+    return {key: {"mean": float(np.nanmean([r[key] for r in results])),
+                  "std" : float(np.nanstd([r[key] for r in results]))} for key in results[0]}

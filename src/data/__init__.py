@@ -17,10 +17,12 @@ the rest of the project uses them through `import data`
 """
 
 from .GWDataset import GWDataset
-from .Split import Splits, splits
-from .preprocessing import prepare, _scaler
+from .Split import Splits, split, load_splits
+
+from .preprocessing import prepare
+
 from .Utah import UTAH_load, UTAH_files, UTAH_rename_files
-from .Ogw  import OGW_load, OGW_concat, OGW_plot
+from .Ogw  import OGW_load, concat_cycles, OGW_plot
 
 
 #============================================================================================================================#
@@ -37,7 +39,7 @@ def load_dataset(name: str, dir_path: str, **params) -> GWDataset:
     """
     Load a raw dataset by its name.
 
-    Parameters
+    Args
     ----------
     name     : dataset name -- key of DATASETS
     dir_path : root datasets directory
@@ -56,17 +58,16 @@ __all__ = [
     "GWDataset",
 
     "Splits",
-    "splits",
+    "split",
+    "load_splits",
 
     "prepare",
-    "_scaler",
 
     "UTAH_load",
     "UTAH_files",
     "UTAH_rename_files",
     
     "OGW_load",
-    "OGW_concat",
+    "concat_cycles",
     "OGW_plot"
-
 ]
