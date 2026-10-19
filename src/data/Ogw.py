@@ -38,6 +38,7 @@ def OGW_load(nb_cycles     : int  = None,
              dir_path      : str  = None,
              subset        : str  = OGW_DS,
              damage_states : list = None,
+             crop          : tuple = None,
              block_size    : int  = 10) -> GWDataset:
 
     """
@@ -117,6 +118,10 @@ def OGW_load(nb_cycles     : int  = None,
                              nb_cycles = nb_cycles,
                              freq_khz  = freq_khz, 
                              channels  = channels)
+
+        #---------------
+        if crop is not None:
+            M = M[..., crop[0]:crop[1]]
 
         #---------------
         if df is None:
