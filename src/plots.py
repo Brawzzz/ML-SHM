@@ -15,10 +15,15 @@ to represent the performances of a model according to its computed metrics
 #---------------------------------------------------------- IMPORT ----------------------------------------------------------#
 #============================================================================================================================#
 import os
+import copy
+import torch
+import torch.nn as nn
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import sklearn.metrics as skm
+
+from matplotlib.patches import FancyBboxPatch
 
 from Metrics import Metrics
 
@@ -321,4 +326,275 @@ def model_report(metrics      : Metrics,
     else:
         plt.close(fig)
  
+    return fig
+
+#================================================================================#
+_SECTIONS = {"encoder"     : "Encoder",
+             "to_latent"   : "Code",
+             "from_latent" : "Code",
+             "decoder"     : "Decoder"}
+
+_COLORS   = {"Input"   : "#9aa5b1",
+             "Encoder" : "#4c78a8",
+             "Code"    : "#e45756",
+             "Decoder" : "#54a24b",
+             "Output"  : "#9aa5b1"}
+
+_MERGED   = (nn.ReLU, nn.LeakyReLU, nn.GELU, nn.ELU, nn.Sigmoid, nn.Tanh, nn.Dropout)
+
+#================================================================================#
+def _layer_label(module: nn.Module) -> str:
+
+    """
+    Short label of a layer for the architecture diagram
+    """
+
+    #---------------------------------------------
+    if isinstance(module, nn.ConvTranspose1d):
+        return f"ConvT1d {module.in_channels}→{module.out_channels}\nk={module.kernel_size[0]}, s={module.stride[0]}"
+
+    if isinstance(module, nn.Conv1d):
+        stride = f", s={module.stride[0]}" if module.stride[0] > 1 else ""
+        return f"Conv1d {module.in_channels}→{module.out_channels}\nk={module.kernel_size[0]}{stride}"
+
+    if isinstance(module, nn.MaxPool1d):
+        return f"MaxPool\n÷{module.kernel_size}"
+
+    if isinstance(module, nn.Upsample):
+        return f"Upsample\n×{int(module.scale_factor)}"
+
+    if isinstance(module, nn.Linear):
+        return f"Dense\n{module.in_features}→{module.out_features}"
+
+    return type(module).__name__
+
+#================================================================================#
+def _fmt_params(n: int) -> str:
+
+    if n >= 1e6: return f"{n / 1e6:.2f}M"
+    if n >= 1e3: return f"{n / 1e3:.1f}k"
+    return str(n)
+
+#================================================================================#
+def _trace_layers(model: nn.Module) -> tuple[list[dict], tuple]:
+
+    """
+    Run one dummy signal through `model` and record every leaf layer :
+    section, label, output shape, number of parameters.
+    Activations / dropout are merged into the previous layer.
+
+    Returns
+    ----------
+    (blocks, out_shape) : (list[dict], tuple) one dict per drawn block | shape of the model output
+    """
+
+    #---------------------------------------------
+    net     = copy.deepcopy(model).cpu().eval()
+    records = []
+    hooks   = []
+
+    for (name, module) in net.named_modules():
+
+        if list(module.children()) or isinstance(module, nn.Identity):
+            continue
+
+        hook = module.register_forward_hook(
+            lambda mod, inp, out, name=name: records.append((name, mod, tuple(out.shape[1:]))))
+        hooks.append(hook)
+
+    #--------------------
+    x = torch.zeros(1, getattr(net, "in_channels", 1), net.input_length)
+
+    with torch.no_grad():
+        out_shape = tuple(net(x).shape[1:])
+
+    for hook in hooks:
+        hook.remove()
+
+    #---------------------------------------------
+    blocks = []
+
+    for (name, module, shape) in records:
+
+        section = _SECTIONS.get(name.split(".")[0], name.split(".")[0].capitalize())
+        params  = sum(p.numel() for p in module.parameters(recurse=False))
+        frozen  = params > 0 and not any(p.requires_grad for p in module.parameters(recurse=False))
+
+        if isinstance(module, _MERGED) and blocks and blocks[-1]["section"] == section:
+            blocks[-1]["act"] = type(module).__name__
+            continue
+
+        blocks.append({"section" : section,
+                       "label"   : _layer_label(module),
+                       "shape"   : shape,
+                       "params"  : params,
+                       "frozen"  : frozen,
+                       "act"     : None})
+
+    return (blocks, out_shape)
+
+#================================================================================#
+def model_architecture(model         : nn.Module,
+                       save_dir      : str  = None,
+                       name          : str  = None,
+                       print_summary : bool = True,
+                       show          : bool = True) -> plt.Figure:
+
+    """
+    Block diagram of a BaseDetector (e.g. a trained model from run.load_trained) :
+
+        - one block per layer, height ~ log(signal length), width ~ log(channels)
+        - colored by section : Encoder | Code | Decoder
+        - under each block : layer type, output shape, number of parameters
+        - the latent code (smallest representation) is outlined in black
+        - frozen layers (requires_grad = False, e.g. transfer learning) are hatched
+
+    The model is traced with one zero signal of shape (1, in_channels, input_length),
+    on a copy on CPU : the given model is left untouched.
+
+    Args
+    ----------
+    model         : (BaseDetector) model to draw -- needs `input_length` (and `in_channels`)
+    save_dir      : (str) directory where the figure is saved as <name>_architecture.png -- None = no save
+    name          : (str) name used in the title and file name -- defaults model.NAME
+    print_summary : (bool) also print a layer-by-layer table in the console -- defaults True
+    show          : (bool) display the figure -- defaults True
+
+    Returns
+    ----------
+    fig : (plt.Figure) matplotlib figure
+
+    Example
+    ----------
+        (model, _) = run.load_trained("./results/CAE_OGW_sawant_noTL/seed_0")
+        plots.model_architecture(model, save_dir="./results/CAE_OGW_sawant_noTL")
+    """
+
+    #---------------------------------------------
+    name               = name or getattr(model, "NAME", type(model).__name__)
+    (blocks, out_shape) = _trace_layers(model)
+
+    in_shape = (getattr(model, "in_channels", 1), model.input_length)
+
+    blocks = ([{"section": "Input",  "label": "Input",  "shape": in_shape,  "params": 0, "act": None}] + blocks +
+              [{"section": "Output", "label": "Output", "shape": out_shape, "params": 0, "act": None}])
+
+    #--------------------------------------------- code = smallest representation
+    sizes    = [int(np.prod(b["shape"])) for b in blocks[1:-1]]
+    code_idx = 1 + int(np.argmin(sizes))
+
+    total     = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    #--------------------------------------------- console summary
+    if print_summary:
+
+        print(f"\n#{f' {name} architecture '.center(76, '-')}#")
+        print(f"  {'section':<9} {'layer':<28} {'output shape':<16} {'params':>10}")
+
+        for (i, b) in enumerate(blocks):
+            layer = b["label"].replace("\n", " ") + (f" + {b['act']}" if b["act"] else "")
+            mark  = "  <- code" if i == code_idx else ""
+            print(f"  {b['section']:<9} {layer:<28} {' x '.join(map(str, b['shape'])):<16} {b['params']:>10,}{mark}")
+
+        print(f"\n  total : {total:,} parameters | trainable : {trainable:,} | frozen : {total - trainable:,}")
+        print("#" + "-" * 76 + "#\n")
+
+    #--------------------------------------------- block geometry
+    def dims(shape):
+        (ch, ln) = shape if len(shape) == 2 else (1, shape[0])
+        return (ch, ln)
+
+    max_len = max(dims(b["shape"])[1] for b in blocks)
+    max_ch  = max(dims(b["shape"])[0] for b in blocks)
+
+    def height(ln): return 0.5 + 2.5 * np.log1p(ln) / np.log1p(max_len)
+    def width(ch):  return 0.18 + 0.55 * np.log2(ch + 1) / np.log2(max_ch + 1)
+
+    #---------------------------------------------
+    sns.set_theme(style="white")
+
+    gap         = 0.45
+    total_width = sum(width(dims(b["shape"])[0]) + gap for b in blocks)
+    (fig, ax)   = plt.subplots(figsize=(max(10, 1.15 * total_width), 6.5))
+
+    x        = 0.0
+    centers  = []
+    sections = {}
+
+    for (i, b) in enumerate(blocks):
+
+        (ch, ln) = dims(b["shape"])
+        (w, h)   = (width(ch), height(ln))
+        color    = _COLORS.get(b["section"], "#bab0ac")
+
+        ax.add_patch(FancyBboxPatch((x, -h / 2), w, h,
+                                    boxstyle  = "round,pad=0.02,rounding_size=0.05",
+                                    facecolor = color, alpha=0.85,
+                                    edgecolor = "black" if i == code_idx else "white",
+                                    linewidth = 2.5 if i == code_idx else 1.0,
+                                    hatch     = "///" if b.get("frozen") else None))
+
+        cx = x + w / 2
+        centers.append(cx)
+
+        #----------- shape above, layer + params below
+        ax.text(cx, h / 2 + 0.08, " × ".join(map(str, b["shape"])),
+                ha="center", va="bottom", fontsize=7, rotation=90)
+
+        label = b["label"] + (f"\n+ {b['act']}" if b["act"] else "")
+        if b["params"]:
+            label += f"\n{_fmt_params(b['params'])} p." + (" (frozen)" if b.get("frozen") else "")
+
+        ax.text(cx, -1.65, label, ha="center", va="top", fontsize=7, linespacing=1.15)
+
+        sections.setdefault(b["section"], []).append((x, x + w, b["params"]))
+        x += w + gap
+
+    #--------------------------------------------- arrows between blocks
+    for (c0, c1) in zip(centers[:-1], centers[1:]):
+        ax.annotate("", xy=(c1, 0), xytext=(c0, 0),
+                    arrowprops=dict(arrowstyle="-|>", color="#555555", lw=0.6, alpha=0.5), zorder=0)
+
+    #--------------------------------------------- section brackets
+    for (section, spans) in sections.items():
+
+        if section in ("Input", "Output"):
+            continue
+
+        (x0, x1) = (spans[0][0], spans[-1][1])
+        n_params = sum(s[2] for s in spans)
+        color    = _COLORS.get(section, "#bab0ac")
+
+        ax.plot([x0, x1], [2.35, 2.35], color=color, lw=3, solid_capstyle="round")
+        ax.text((x0 + x1) / 2, 2.45, f"{section} — {_fmt_params(n_params)} params",
+                ha="center", va="bottom", fontsize=10, fontweight="bold", color=color)
+
+    #---------------------------------------------
+    ax.set_xlim(-gap, x)
+    ax.set_ylim(-3.0, 3.0)
+    ax.axis("off")
+
+    frozen = f" | frozen : {_fmt_params(total - trainable)}" if total != trainable else ""
+    ax.set_title(f"{name} — {total:,} parameters{frozen}  |  input {' × '.join(map(str, in_shape))}"
+                 f"  →  code {' × '.join(map(str, blocks[code_idx]['shape']))}",
+                 fontsize=12, fontweight="bold")
+
+    fig.tight_layout()
+
+    #-------------------------
+    if save_dir is not None:
+
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"{name}_architecture.png")
+
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+        print(f"Architecture saved at : {save_path}")
+
+    #-------------------------
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
     return fig

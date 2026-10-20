@@ -35,6 +35,7 @@ DEFAULT_RUN = {
     },
 
     "split" : {
+      "method"           : "random",         # "random" (signal by signal) | "group" (by acquisition block)
       "train_ratio"      : 0.8,
       "validation_ratio" : 0.2,
     },
@@ -162,6 +163,7 @@ def validate(config : dict) -> None:
         - tuning.objective is correctly given
             - damage signals in validation if objective is not "val_loss"
 
+        - split.method is "random" "group"
         - evaluation.n_seeds is positive
 
     Args
@@ -187,6 +189,10 @@ def validate(config : dict) -> None:
         
         raise ValueError(f"tuning.objective = '{objective}' needs damaged signals in the validation set : "
                          f"use objective 'val_loss'")
+
+    #--------------------
+    if config["split"]["method"] not in ("random", "group"):
+        raise ValueError(f"split.method must be 'group' or 'random' : {config['split']['method']}")
 
     #--------------------
     if config["evaluation"]["n_seeds"] < 1:

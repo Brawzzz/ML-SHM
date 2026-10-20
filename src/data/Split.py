@@ -12,6 +12,12 @@ from .GWDataset import GWDataset
 
 
 #============================================================================================================================#
+#--------------------------------------------------------- CONSTANT ---------------------------------------------------------#
+#============================================================================================================================#
+SPLIT_METHODS = ("group", "random")
+
+
+#============================================================================================================================#
 #---------------------------------------------------------- CLASS -----------------------------------------------------------#
 #============================================================================================================================#
 @dataclass
@@ -28,12 +34,15 @@ class Splits:
     train        : indices of healthy signals only
     validation   : indices of healthy + damaged signals
     test         : indices of healthy + damaged signals never seen before
+    method       : "group"  -> the signals of a block (ds.groups) are always in the same set
+                   "random" -> each signal is assigned independently (blocks can be shared)
     """
 
     #---------------------------------------------
     train        : np.ndarray
     validation   : np.ndarray
     test         : np.ndarray
+    method       : str = "group"
 
     #================================================================================#
     def check(self, ds : GWDataset) -> None:
@@ -43,7 +52,7 @@ class Splits:
 
             1 - only healthy signals in train
             2 - no overlap between train | validation | test sets
-            3 - no healthy block shared between sets
+            3 - no block shared between sets (only for method = "group")
             
         Args
         ----------
@@ -60,6 +69,9 @@ class Splits:
 
         if (train_set & validation_set) or (train_set & test_set) or (validation_set & test_set):
             raise AssertionError("train | val | test indices overlap")
+
+        if self.method == "random":
+            return
 
         #---------------------------------------------
         sets = {"train" : self.train, "validation" : self.validation, "test" : self.test}
@@ -97,7 +109,7 @@ class Splits:
 
         #---------------------------------------------
         lines = []
-        lines.append(f"//----------------------- Split of {ds.name} dataset -----------------------//")
+        lines.append(f"//------------------- Split of {ds.name} dataset ({self.method}) -------------------//")
 
         for name, idx in (("train", self.train), ("validation", self.validation), ("test", self.test)):
 
@@ -148,6 +160,7 @@ class Splits:
                  train      = self.train,
                  validation = self.validation,
                  test       = self.test,
+                 method     = self.method,
                  y          = ds.y,         
                  groups     = ds.groups)
 
@@ -185,9 +198,12 @@ def load_splits(path : str, ds : GWDataset) -> Splits:
         raise ValueError(f"split {path} was made on another version of the {ds.name} dataset")
 
     #-------------------------
+    method = str(split_file["method"]) if "method" in split_file else "group"
+
     splits = Splits(train      = split_file["train"], 
                     validation = split_file["validation"], 
-                    test       = split_file["test"])
+                    test       = split_file["test"],
+                    method     = method)
     
     splits.check(ds)
 
@@ -197,7 +213,8 @@ def load_splits(path : str, ds : GWDataset) -> Splits:
 def split(ds          : GWDataset,
           train_ratio : float = 0.8,
           val_ratio   : float = 0.5,
-          seed        : int   = 0) -> Splits:
+          seed        : int   = 0,
+          method      : str   = "random") -> Splits:
 
     """
     Split a guided-wave dataset into Train | Validation | Test sets, by acquisition groups.
@@ -210,9 +227,13 @@ def split(ds          : GWDataset,
     | validation | (1 - train_ratio) * HEALTHY_VAL_RATIO  |     val_ratio      |
     |   test     | (1 - train_ratio) * HEALTHY_VAL_RATIO  |   1 - val_ratio    |
 
-    All the signals of a group (same acquisition period -- ds.groups) go to the same
-    set, so that identical measurements are never on both sides of the split.
+    method = "random" : each signal is assigned independently, as in a classic random split
+                            (e.g. to reproduce papers). Consecutive, almost identical measurements can end up
+                            in train AND test : the test scores are then optimistic.
 
+    method = "group"  : all the signals of a group (same acquisition period -- ds.groups) go to the same
+                        set, so that identical measurements are never on both sides of the split.
+    
     The validation set is used for early stopping, threshold selection and hyperparameter tuning. 
     The test set is only used for the final evaluation.
 
@@ -223,6 +244,7 @@ def split(ds          : GWDataset,
     train_ratio : (float) proportion of healthy signals used for training
     val_ratio   : (float) proportion of damaged signals used for validation
     seed        : (int) random seed
+    method      : (str) "group" (by acquisition block) | "random" (signal by signal) -- defaults "group"
 
     Returns
     ----------
@@ -235,6 +257,9 @@ def split(ds          : GWDataset,
 
     if not 0 < val_ratio < 1:
         raise ValueError(f"val_ratio must be in [0, 1) : {val_ratio}")
+
+    if method not in SPLIT_METHODS:
+        raise ValueError(f"unknown split method : {method} (expected one of {SPLIT_METHODS})")
 
     #---------------------------------------------
     HEALTHY_VAL_RATIO = 0.5
@@ -255,20 +280,30 @@ def split(ds          : GWDataset,
                       val_ratio,
                       1 - val_ratio]
 
-    healthy_parts = assign(healthy_idx, ds.groups, healthy_ratios, rng_seed=seed)
-    damaged_parts = assign(damaged_idx, ds.groups, damaged_ratios, rng_seed=seed+1)
+    #-------------------------
+    if method == "group" :
+        groups = ds.groups  
+    else :
+        np.arange(len(ds.y))
+
+    healthy_parts = assign(healthy_idx, groups, healthy_ratios, rng_seed=seed)
+    damaged_parts = assign(damaged_idx, groups, damaged_ratios, rng_seed=seed+1)
     
     #---------------------------------------------
     split = Splits(train      = np.sort(np.concatenate([healthy_parts[0], damaged_parts[0]])).astype(int),
                    validation = np.sort(np.concatenate([healthy_parts[1], damaged_parts[1]])).astype(int),
-                   test       = np.sort(np.concatenate([healthy_parts[2], damaged_parts[2]])).astype(int))
+                   test       = np.sort(np.concatenate([healthy_parts[2], damaged_parts[2]])).astype(int),
+                   method     = method)
 
     split.check(ds)
 
     return split
 
 #================================================================================#
-def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42):
+def assign(indices  : list[int], 
+           groups   : np.ndarray, 
+           ratios   : list[float] = [80., 10., 10.], 
+           rng_seed : int = 42):
 
     """
     Splits data indices into Train | Validation | Test sets
@@ -279,11 +314,13 @@ def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42)
 
     Args
     ----------
-    indices   : index of a specific class (healthy or damaged)
-    groups    : Tabs of groups labels corresponding to data. 
+    indices   : (list[int]) index of a specific class (healthy or damaged)
+    groups    : (np.ndarray) Tabs of groups labels corresponding to data. 
                 The length must at least be equal to the max value in 'indices`.
-    ratios    : wanted amount of the data in each sets -- [train, validation, test] -- defaults [80., 10., 10.]
-    rng_seed  : random generator seed
+    ratios    : (lis[int]) wanted amount of the data in each sets -- 
+                defaults [80., 10., 10.] --> 
+
+    rng_seed  : (int) random generator seed
 
     Returns:
     ----------
@@ -301,9 +338,9 @@ def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42)
         (train_index, tmp_index) = (np.array([], dtype=int), indices)
 
     else:
-        gss1 = GroupShuffleSplit(n_splits       = 1, 
-                                 test_size      = (r_validation + r_test), 
-                                 random_state   = rng_seed)
+        gss1 = GroupShuffleSplit(n_splits     = 1, 
+                                 test_size    = (r_validation + r_test), 
+                                 random_state = rng_seed)
         
         (train_idx,   tmp_idx)   = next(gss1.split(indices, groups=groups[indices]))
         (train_index, tmp_index) = (indices[train_idx], indices[tmp_idx])
@@ -316,9 +353,9 @@ def assign(indices, groups, ratios : list[float] = [80., 10., 10.], rng_seed=42)
         (validation_index, test_index) = (tmp_index, np.array([], dtype=int))
 
     else:
-        gss2 = GroupShuffleSplit(n_splits           = 1, 
-                                 test_size          = r_test / (r_validation + r_test), 
-                                 random_state       = rng_seed)
+        gss2 = GroupShuffleSplit(n_splits     = 1, 
+                                 test_size    = r_test / (r_validation + r_test), 
+                                 random_state = rng_seed)
 
         (validation_idx,   test_idx)   = next(gss2.split(tmp_index, groups=groups[tmp_index]))
         (validation_index, test_index) = (tmp_index[validation_idx], tmp_index[test_idx])

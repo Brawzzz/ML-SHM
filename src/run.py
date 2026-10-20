@@ -114,6 +114,7 @@ def run(config     : dict,
     split_path = os.path.join(config["output_dir"], 
                               "splits",
                               f"{ds.name}_{data_key}_"
+                              f"{split_config['method']}_"
                               f"train_{split_config['train_ratio']}_"
                               f"val_{split_config['validation_ratio']}_"
                               f"seed_{config['seed']}.npz")
@@ -132,7 +133,8 @@ def run(config     : dict,
         splits = data.split(ds          = ds, 
                             train_ratio = split_config["train_ratio"], 
                             val_ratio   = split_config["validation_ratio"], 
-                            seed        = config["seed"])
+                            seed        = config["seed"],
+                            method      = split_config["method"])
         
         splits.save(split_path, ds)
 
@@ -427,7 +429,7 @@ def append_summary(config: dict, summary: dict, splits_desc: str) -> None:
            "experiment" : config["name"],
            "dataset"    : config["data"]["dataset"],
            "model"      : config["model"]["name"],
-           "split"      : f"train = {config['split']['train_ratio']} | validation = {config['split']['validation_ratio']}",
+           "split"      : f"{config['split']['method']} | train = {config['split']['train_ratio']} | validation = {config['split']['validation_ratio']}",
            "objective"  : config["tuning"]["objective"] if config["tuning"]["enabled"] else "none",
            "threshold"  : f"{config['threshold']['method']}({config['threshold']['value']})",
            "n_seeds"    : config["evaluation"]["n_seeds"]}
@@ -481,5 +483,3 @@ def print_summary(config : dict, summary : dict) -> None:
         print(f"  {metric:<10}: {s['mean']:.4f} ± {s['std']:.4f}")
 
     print("#----------------------------------------------------------------------------#\n")
-
-    
